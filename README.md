@@ -25,6 +25,7 @@ sudo usermod -aG input $USER   # re-login after this
 ```
 
 ## Run
+First check for the correct device: `sudo libinput list-devices` or `sudo evtest` are your friend.
 ```
 ./cwkeyer /dev/input/eventX          # 20 wpm, 600 Hz
 ./cwkeyer /dev/input/eventX 25 700   # 25 wpm, 700 Hz
