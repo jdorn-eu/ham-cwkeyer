@@ -839,30 +839,11 @@ static int audio_loop(snd_pcm_t *pcm)
     const double phase_inc = 2.0 * M_PI * freq_hz / (double)AUDIO_RATE;
 
     /*
-     * 3 ms ramp to avoid clicks. At very high WPM this becomes a noticeable
-     * fraction of a dit, but for normal CW speeds it is a good compromise.
+     * 3 ms ramp to avoid clicks.
      */
     const double env_step = 1.0 / ((double)AUDIO_RATE * 0.003);
 
     while (keep_running()) {
-        int wr;
-
-        /*
-         * Wait until ALSA says there is room. This helps avoid generating
-         * buffers too early and then blocking with stale key_on state.
-         */
-        wr = snd_pcm_wait(pcm, 20);
-
-        if (wr == 0)
-            continue;
-
-        if (wr < 0) {
-            if (recover_pcm(pcm, wr, "wait") < 0)
-                return -1;
-
-            continue;
-        }
-
         generate_audio(buf,
                        AUDIO_PERIOD_FRAMES,
                        &phase,
