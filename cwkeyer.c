@@ -107,32 +107,40 @@ static void *evdev_thread(void *arg) {
 
 /* Curtis 8044-style iambic Mode B keyer.
  *
- * Each sent element is followed by watching both paddles through the
- * element's mark AND its trailing inter-element space. If the paddle
- * OPPOSITE the one just sent was touched at any point during that window,
- * one element of that opposite type is queued - even if both paddles have
- * since been released. That queued element is what gives mode B its
- * defining "extra element after release" behavior, and is what lets most
- * 2-element letters be sent with a single squeeze-and-release motion. */
+ * Decision priority each cycle:
+ *   1. A queued Mode-B element (opposite paddle was touched during the
+ *      previous element's window) is sent directly - it never enters the
+ *      alternation branch, so a single stray/overlap touch can only ever
+ *      insert ONE extra element, never sustained oscillation.
+ *   2. A genuine LIVE squeeze (both paddles down right now) alternates.
+ *   3. A single live paddle just repeats itself.
+ */
 static void *keyer_thread(void *arg) {
     (void)arg;
     long dit_ns = (long)(1.2 / wpm * 1e9);   /* PARIS timing: dit(ms) = 1200/wpm */
     long dah_ns = dit_ns * 3;
     long space_ns = dit_ns;
     int last_was_dit = 0;
-    int dit_mem = 0, dah_mem = 0; /* opposite-paddle memory, consumed each cycle */
+    int dit_mem = 0, dah_mem = 0; /* one-shot opposite-paddle memory */
 
     while (running) {
-        int dit = atomic_load(&dit_paddle) || dit_mem;
-        int dah = atomic_load(&dah_paddle) || dah_mem;
-        dit_mem = dah_mem = 0;
+        int dit_live = atomic_load(&dit_paddle);
+        int dah_live = atomic_load(&dah_paddle);
+        int send_dit;
 
-        if (!dit && !dah) {
-            sleep_ns(1000000L); /* 1ms idle poll */
+        if (dit_mem || dah_mem) {
+            send_dit = dit_mem ? 1 : 0;   /* queued element: no alternation */
+            dit_mem = dah_mem = 0;
+        } else if (dit_live && dah_live) {
+            send_dit = !last_was_dit;     /* genuine squeeze: alternate */
+        } else if (dit_live) {
+            send_dit = 1;
+        } else if (dah_live) {
+            send_dit = 0;
+        } else {
+            sleep_ns(1000000L);           /* 1ms idle poll */
             continue;
         }
-
-        int send_dit = (dit && dah) ? !last_was_dit : dit;
 
         atomic_store(&key_on, 1);
         int seen_dit = 0, seen_dah = 0;
@@ -142,9 +150,7 @@ static void *keyer_thread(void *arg) {
 
         watch_ns(space_ns, &seen_dit, &seen_dah);
 
-        /* Latch memory only for the paddle opposite what we just sent -
-         * a held same-side paddle is already caught by the live read
-         * at the top of the next loop iteration. */
+        /* Latch memory only for the paddle opposite what we just sent. */
         if (send_dit) dah_mem = seen_dah;
         else           dit_mem = seen_dit;
     }
