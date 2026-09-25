@@ -9,7 +9,7 @@ Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand ad
 ## Build
 ```
 sudo dnf install gcc alsa-lib-devel
-gcc -O2 -o cwkeyer cwkeyer.c -lasound -lpthread -lm
+gcc -O2 -Wall -Wextra -o cwkeyer cwkeyer.c -lasound -lpthread -lm
 ```
 
 In order for your user session to able to access the adapter input, set proper udev rules:
