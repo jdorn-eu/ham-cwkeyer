@@ -2,7 +2,7 @@
 
 Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand adapter working as a iambic keyer in software.
 ## Design description
-- Reads evdev (/dev/input/eventX) input from adapter
+- Reads evdev (/dev/input/eventX) input from adapter or alternatively keyboard input
 - Generates a sine wave pattern
 - Ultimately feeds the sine wave to ALSA
 
@@ -25,10 +25,11 @@ sudo usermod -aG input $USER   # re-login after this
 ```
 
 ## Run
-First check for the correct device: `sudo libinput list-devices` or `sudo evtest` are your friend.
+First check for the correct device: `sudo libinput list-devices` or `sudo evtest` are your friend. If you want to use your keyboard, that's usually `/dev/input/event3`. In that case, add the `nograb` parameter so you can still send SIGINT to close the program.
 ```
 ./cwkeyer /dev/input/eventX          # 20 wpm, 600 Hz
 ./cwkeyer /dev/input/eventX 25 700   # 25 wpm, 700 Hz
+./cwkeyer /dev/input/event3 nograb   # keyboard instead of HRS vband adapter
 ```
 
 ## Combine with mic input

@@ -63,7 +63,7 @@
 
 enum {
     AUDIO_RATE = 48000,
-    AUDIO_PERIOD_FRAMES = 64
+    AUDIO_PERIOD_FRAMES = 128
 };
 
 static double wpm = 20.0;
@@ -73,7 +73,7 @@ static int dit_code = KEY_LEFTCTRL;
 static int dah_code = KEY_RIGHTCTRL;
 static int do_grab = 1;
 
-static unsigned int alsa_latency_us = 5000;
+static unsigned int alsa_latency_us = 20000;
 
 static atomic_int dit_paddle = 0;
 static atomic_int dah_paddle = 0;
@@ -702,11 +702,26 @@ static int recover_pcm(snd_pcm_t *pcm, int err, const char *where)
 static snd_pcm_t *open_audio(void)
 {
     const char *dev = getenv("CW_ALSA_DEVICE");
+    const char *pulse_sink = getenv("PULSE_SINK");
     snd_pcm_t *pcm = NULL;
     int err;
 
     if (!dev || !*dev)
-        dev = "default";
+        dev = "pulse";
+
+    /*
+     * If using the Pulse ALSA plugin and no sink was explicitly selected,
+     * send the keyer to the virtual combined sink created by cw-mic-mix.sh.
+     */
+    if (strcmp(dev, "pulse") == 0 && (!pulse_sink || !*pulse_sink)) {
+        if (setenv("PULSE_SINK", "cw_out", 0) == 0) {
+            fprintf(stderr, "PULSE_SINK not set; defaulting to cw_out\n");
+        } else {
+            fprintf(stderr,
+                    "warning: could not set PULSE_SINK=cw_out: %s\n",
+                    strerror(errno));
+        }
+    }
 
     err = snd_pcm_open(&pcm, dev, SND_PCM_STREAM_PLAYBACK, 0);
     if (err < 0) {
@@ -921,10 +936,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    alsa_latency_us = parse_uint_env("CW_ALSA_LATENCY_US",
-                                     5000,
-                                     1000,
-                                     100000);
+  alsa_latency_us = parse_uint_env("CW_ALSA_LATENCY_US",
+                                 20000,
+                                 1000,
+                                 100000);
 
     if (install_signal_handlers() < 0)
         return 1;
