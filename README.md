@@ -1,6 +1,6 @@
 # ham-cwkeyer
 
-Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand adapter working as a iambic keyer in software.
+Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand adapter working as an iambic keyer in software.
 ## Design description
 - Reads evdev (/dev/input/eventX) input from adapter or alternatively keyboard input
 - Runs an iambic mode B keyer (Curtis-8044 style, with paddle memory)
@@ -10,10 +10,10 @@ Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand ad
 ## Build
 ```
 sudo dnf install gcc alsa-lib-devel
-gcc -O2 -Wall -Wextra -o cwkeyer cwkeyer.c -lasound -lpthread -lm
+make
 ```
 
-In order for your user session to able to access the adapter input, set proper udev rules:
+In order for your user session to be able to access the adapter input, set proper udev rules:
 ```
 lsusb   # find the adapter's vendor:product ID
 ```
@@ -32,8 +32,11 @@ First check for the correct device: `sudo libinput list-devices` or `sudo evtest
 ./cwkeyer /dev/input/eventX 25 700             # 25 wpm, 700 Hz
 ./cwkeyer /dev/input/eventX 25 700 COMMA DOT   # remap dit/dah keys
 ./cwkeyer /dev/input/event3 nograb             # keyboard instead of HRS vband adapter
+./cwkeyer /dev/input/event3 nograb decode      # also print keyed morse as text
 ```
 Paddle defaults are left ctrl (dit) and right ctrl (dah). Running `./cwkeyer` with no arguments lists the known key names; raw evdev key codes work too.
+
+While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty); the previous terminal state is restored on exit. With `decode`, each keyed symbol is printed as text as you key, without newlines; unknown symbols are ignored.
 
 ## Environment
 - `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`.

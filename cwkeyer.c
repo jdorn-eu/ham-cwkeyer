@@ -8,10 +8,10 @@
  *   KEY_RIGHTCTRL = dah
  *
  * Build:
- *   gcc -O2 -Wall -Wextra -o cwkeyer cwkeyer.c -lasound -lpthread -lm
+ *   make   (or: gcc -O2 -Wall -Wextra -o cwkeyer cwkeyer.c -lasound -lpthread -lm)
  *
  * Run:
- *   ./cwkeyer /dev/input/eventX [wpm=20] [freq_hz=600] [dit_key] [dah_key] [nograb]
+ *   ./cwkeyer /dev/input/eventX [wpm=20] [freq_hz=600] [dit_key] [dah_key] [nograb] [decode]
  *
  * Examples:
  *   ./cwkeyer /dev/input/eventX
@@ -19,6 +19,7 @@
  *   ./cwkeyer /dev/input/eventX 25 700 COMMA DOT
  *   ./cwkeyer /dev/input/eventX 25 700 COMMA DOT nograb
  *   ./cwkeyer /dev/input/eventX nograb
+ *   ./cwkeyer /dev/input/event3 nograb decode
  *
  * Environment:
  *   CW_ALSA_DEVICE=pulse            ALSA PCM to open. Default: "pulse".
@@ -52,6 +53,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -76,6 +78,7 @@ static double freq_hz = 600.0;
 static int dit_code = KEY_LEFTCTRL;
 static int dah_code = KEY_RIGHTCTRL;
 static int do_grab = 1;
+static int do_decode = 0;
 
 static unsigned int alsa_latency_us = 20000;
 
@@ -147,7 +150,7 @@ static int install_signal_handlers(void)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-        "usage: %s /dev/input/eventX [wpm=20] [freq_hz=600] [dit_key] [dah_key] [nograb]\n"
+        "usage: %s /dev/input/eventX [wpm=20] [freq_hz=600] [dit_key] [dah_key] [nograb] [decode]\n"
         "\n"
         "Examples:\n"
         "  %s /dev/input/eventX\n"
@@ -155,6 +158,7 @@ static void usage(const char *prog)
         "  %s /dev/input/eventX 25 700 COMMA DOT\n"
         "  %s /dev/input/eventX 25 700 COMMA DOT nograb\n"
         "  %s /dev/input/eventX nograb\n"
+        "  %s /dev/input/event3 nograb decode\n"
         "\n"
         "Known key names include:\n"
         "  LEFTCTRL RIGHTCTRL LEFTSHIFT RIGHTSHIFT LEFTALT RIGHTALT\n"
@@ -167,6 +171,12 @@ static void usage(const char *prog)
         "Options:\n"
         "  nograb    Do not take exclusive control of the input device.\n"
         "            Useful when testing on your normal keyboard.\n"
+        "  decode    Print the keyed morse, decoded to text, without\n"
+        "            newlines. Unknown symbols are ignored.\n"
+        "\n"
+        "While running, terminal echo is disabled so keystrokes do not\n"
+        "print in the window; the previous terminal state is restored\n"
+        "on exit.\n"
         "\n"
         "Environment:\n"
         "  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
@@ -174,7 +184,7 @@ static void usage(const char *prog)
         "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
         "                             unset, it defaults to cw_out (created by\n"
         "                             cw-mic-mix.sh)\n",
-        prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog);
 }
 
 static double parse_double_arg(const char *s,
@@ -593,6 +603,81 @@ out:
 }
 
 /*
+ * The keyer reads paddles from evdev, not stdin, but key presses still
+ * reach the controlling terminal and the tty line discipline would echo
+ * them. Disable echo and canonical mode while running; ISIG is kept so
+ * Ctrl+C still works.
+ */
+static struct termios saved_termios;
+static int termios_modified = 0;
+
+static void disable_terminal_echo(void)
+{
+    struct termios t;
+
+    if (!isatty(STDIN_FILENO))
+        return;
+
+    if (tcgetattr(STDIN_FILENO, &t) < 0)
+        return;
+
+    saved_termios = t;
+    t.c_lflag &= ~(tcflag_t)(ECHO | ICANON);
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &t) < 0)
+        return;
+
+    termios_modified = 1;
+}
+
+static void restore_terminal(void)
+{
+    if (termios_modified)
+        tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+}
+
+/*
+ * Morse code table for the decode display. Unknown symbols report '?',
+ * which the caller drops.
+ */
+static const struct {
+    char ch;
+    const char *code;
+} morse_table[] = {
+    {'A', ".-"},   {'B', "-..."}, {'C', "-.-."}, {'D', "-.."},
+    {'E', "."},    {'F', "..-."},  {'G', "--."},  {'H', "...."},
+    {'I', ".."},   {'J', ".---"}, {'K', "-.-"},  {'L', ".-.."},
+    {'M', "--"},   {'N', "-."},   {'O', "---"},  {'P', ".--."},
+    {'Q', "--.-"}, {'R', ".-."},  {'S', "..."},  {'T', "-"},
+    {'U', "..-"},  {'V', "...-"}, {'W', ".--"},  {'X', "-..-"},
+    {'Y', "-.--"}, {'Z', "--.."},
+    {'0', "-----"}, {'1', ".----"}, {'2', "..---"}, {'3', "...--"},
+    {'4', "....-"}, {'5', "....."}, {'6', "-...."}, {'7', "--..."},
+    {'8', "---.."}, {'9', "----."},
+    {'.', ".-.-.-"}, {',', "--..--"}, {'?', "..--.."}, {'/', "-..-."},
+    {'-', ".-.-."},  {'(', "-.--."},  {')', "-.--.-"}, {'"', ".-..-"},
+    {'\'', ".----."}, {'@', ".--.-."}, {'&', "....-."}, {'=', "-...-"},
+    {0, NULL}
+};
+
+static char morse_decode(const char *s, size_t len)
+{
+    char buf[16];
+
+    if (len >= sizeof(buf))
+        return '?';
+
+    memcpy(buf, s, len);
+    buf[len] = '\0';
+
+    for (int i = 0; morse_table[i].code; i++) {
+        if (strcmp(morse_table[i].code, buf) == 0)
+            return morse_table[i].ch;
+    }
+
+    return '?';
+}
+
+/*
  * Curtis-8044-style iambic Mode B keyer.
  *
  * Decision priority:
@@ -615,6 +700,8 @@ static void *keyer_thread(void *arg)
     int last_was_dit = 0;
     int dit_mem = 0;
     int dah_mem = 0;
+    char sym[16];
+    size_t sym_len = 0;
 
     while (keep_running()) {
         int dit_event;
@@ -654,6 +741,23 @@ static void *keyer_thread(void *arg)
             send_dit = 0;
         } else {
             /*
+             * Idle: the symbol being keyed is complete. If the decode
+             * display is active, print it.
+             */
+            if (sym_len) {
+                if (do_decode) {
+                    char ch = morse_decode(sym, sym_len);
+
+                    /* Unknown symbols are dropped. */
+                    if (ch != '?')
+                        fputc(ch, stdout);
+
+                    fflush(stdout);
+                }
+                sym_len = 0;
+            }
+
+            /*
              * Idle poll interval. Lower values reduce input-to-keyer latency
              * but increase wakeups.
              */
@@ -674,6 +778,9 @@ static void *keyer_thread(void *arg)
         last_was_dit = send_dit;
 
         watch_ns(space_ns, &seen_dit, &seen_dah);
+
+        if (sym_len + 1 < sizeof(sym))
+            sym[sym_len++] = send_dit ? '.' : '-';
 
         /*
          * Curtis Mode B one-shot memory: latch only the opposite paddle.
@@ -711,6 +818,8 @@ static snd_pcm_t *open_audio(void)
     const char *dev = getenv("CW_ALSA_DEVICE");
     const char *pulse_sink = getenv("PULSE_SINK");
     snd_pcm_t *pcm = NULL;
+    snd_pcm_hw_params_t *hw = NULL;
+    int forced_sink = 0;
     int err;
 
     if (!dev || !*dev)
@@ -722,6 +831,7 @@ static snd_pcm_t *open_audio(void)
      */
     if (strcmp(dev, "pulse") == 0 && (!pulse_sink || !*pulse_sink)) {
         if (setenv("PULSE_SINK", "cw_out", 0) == 0) {
+            forced_sink = 1;
             fprintf(stderr, "PULSE_SINK not set; defaulting to cw_out\n");
         } else {
             fprintf(stderr,
@@ -735,6 +845,14 @@ static snd_pcm_t *open_audio(void)
         fprintf(stderr,
                 "cannot open ALSA playback device '%s': %s\n",
                 dev, snd_strerror(err));
+        if (forced_sink) {
+            fprintf(stderr,
+                    "PULSE_SINK was defaulted to 'cw_out', which does not "
+                    "exist.\n"
+                    "Run ./cw-mic-mix.sh first, or set PULSE_SINK to a real "
+                    "sink,\n"
+                    "e.g. PULSE_SINK=$(pactl get-default-sink)\n");
+        }
         return NULL;
     }
 
@@ -774,6 +892,28 @@ static snd_pcm_t *open_audio(void)
             "ALSA device: %s, rate: %u Hz, requested latency: %u us, "
             "write period: %d frames\n",
             dev, AUDIO_RATE, alsa_latency_us, AUDIO_PERIOD_FRAMES);
+
+    /*
+     * Log what the server actually negotiated, since it may differ from
+     * the request.
+     */
+    snd_pcm_hw_params_alloca(&hw);
+    if (hw && snd_pcm_hw_params_current(pcm, hw) == 0) {
+        unsigned int rate = 0;
+        snd_pcm_uframes_t buffer = 0, period = 0;
+
+        snd_pcm_hw_params_get_rate(hw, &rate, 0);
+        snd_pcm_hw_params_get_buffer_size(hw, &buffer);
+        snd_pcm_hw_params_get_period_size(hw, &period, 0);
+
+        if (rate) {
+            fprintf(stderr,
+                    "ALSA achieved: rate %u Hz, buffer %lu frames (%.1f ms), "
+                    "period %lu frames (%.1f ms)\n",
+                    rate, (unsigned long)buffer, 1000.0 * buffer / rate,
+                    (unsigned long)period, 1000.0 * period / rate);
+        }
+    }
 
     return pcm;
 }
@@ -865,6 +1005,8 @@ static int audio_loop(snd_pcm_t *pcm)
      */
     const double env_step = 1.0 / ((double)AUDIO_RATE * 0.003);
 
+    int rc = 0;
+
     while (keep_running()) {
         generate_audio(buf,
                        AUDIO_PERIOD_FRAMES,
@@ -873,11 +1015,20 @@ static int audio_loop(snd_pcm_t *pcm)
                        phase_inc,
                        env_step);
 
-        if (pcm_write_all(pcm, buf, AUDIO_PERIOD_FRAMES) < 0)
-            return -1;
+        if (pcm_write_all(pcm, buf, AUDIO_PERIOD_FRAMES) < 0) {
+            rc = -1;
+            break;
+        }
     }
 
-    return 0;
+    /*
+     * Drop rather than drain: on Ctrl+C or device failure, stop promptly
+     * instead of playing out queued audio. This runs on the audio thread,
+     * the only thread using the PCM handle by now, so no lock is needed.
+     */
+    snd_pcm_drop(pcm);
+
+    return rc;
 }
 
 int main(int argc, char **argv)
@@ -907,6 +1058,11 @@ int main(int argc, char **argv)
     for (int i = 2; i < argc; i++) {
         if (strcasecmp(argv[i], "nograb") == 0) {
             do_grab = 0;
+            continue;
+        }
+
+        if (strcasecmp(argv[i], "decode") == 0) {
+            do_decode = 1;
             continue;
         }
 
@@ -951,21 +1107,27 @@ int main(int argc, char **argv)
     if (install_signal_handlers() < 0)
         return 1;
 
+    disable_terminal_echo();
+
     fprintf(stderr,
-            "CW keyer: %.2f WPM, %.2f Hz, dit code %d, dah code %d, %s\n",
+            "CW keyer: %.2f WPM, %.2f Hz, dit code %d, dah code %d, %s%s\n",
             wpm,
             freq_hz,
             dit_code,
             dah_code,
-            do_grab ? "EVIOCGRAB enabled" : "nograb");
+            do_grab ? "EVIOCGRAB enabled" : "nograb",
+            do_decode ? ", decode" : "");
 
     pcm = open_audio();
-    if (!pcm)
+    if (!pcm) {
+        restore_terminal();
         return 1;
+    }
 
     err = pthread_create(&evdev_tid, NULL, evdev_thread, argv[1]);
     if (err != 0) {
         fprintf(stderr, "pthread_create(evdev): %s\n", strerror(err));
+        restore_terminal();
         snd_pcm_close(pcm);
         return 1;
     }
@@ -974,6 +1136,7 @@ int main(int argc, char **argv)
     if (err != 0) {
         fprintf(stderr, "pthread_create(keyer): %s\n", strerror(err));
         request_stop(1);
+        restore_terminal();
         pthread_join(evdev_tid, NULL);
         snd_pcm_close(pcm);
         return 1;
@@ -986,16 +1149,11 @@ int main(int argc, char **argv)
     request_stop(0);
     ASTORE(key_on, 0);
 
-    /*
-     * Drop rather than drain: on Ctrl+C or device failure, stop promptly
-     * instead of playing out queued audio.
-     */
-    snd_pcm_drop(pcm);
-
     pthread_join(keyer_tid, NULL);
     pthread_join(evdev_tid, NULL);
 
     snd_pcm_close(pcm);
+    restore_terminal();
 
     return ALOAD(fatal_error) ? 1 : 0;
 }
