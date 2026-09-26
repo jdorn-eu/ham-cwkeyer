@@ -21,8 +21,12 @@
  *   ./cwkeyer /dev/input/eventX nograb
  *
  * Environment:
- *   CW_ALSA_DEVICE=default          ALSA PCM to open. Default: "default".
- *   CW_ALSA_LATENCY_US=5000         Requested ALSA latency in microseconds.
+ *   CW_ALSA_DEVICE=pulse            ALSA PCM to open. Default: "pulse".
+ *   CW_ALSA_LATENCY_US=20000        Requested ALSA latency in microseconds.
+ *   PULSE_SINK=cw_out               If the device is "pulse" and PULSE_SINK is
+ *                                   unset, it defaults to "cw_out" (created by
+ *                                   cw-mic-mix.sh). Set it explicitly to a real
+ *                                   sink if you haven't run that script.
  *
  * For your mic-mixing setup, keeping ALSA device "default" is intentional:
  *
@@ -165,8 +169,11 @@ static void usage(const char *prog)
         "            Useful when testing on your normal keyboard.\n"
         "\n"
         "Environment:\n"
-        "  CW_ALSA_DEVICE=default       ALSA PCM to open. Default: default\n"
-        "  CW_ALSA_LATENCY_US=5000      Requested ALSA latency in us.\n",
+        "  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
+        "  CW_ALSA_LATENCY_US=20000   Requested ALSA latency in us\n"
+        "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
+        "                             unset, it defaults to cw_out (created by\n"
+        "                             cw-mic-mix.sh)\n",
         prog, prog, prog, prog, prog, prog);
 }
 
