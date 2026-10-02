@@ -172,7 +172,9 @@ static void usage(const char *prog)
         "  nograb    Do not take exclusive control of the input device.\n"
         "            Useful when testing on your normal keyboard.\n"
         "  decode    Print the keyed morse, decoded to text, without\n"
-        "            newlines. Unknown symbols are ignored.\n"
+        "            newlines. Unknown symbols are ignored. A pause of\n"
+        "            more than seven dits between characters prints a\n"
+        "            space (the ITU word gap).\n"
         "\n"
         "While running, terminal echo is disabled so keystrokes do not\n"
         "print in the window; the previous terminal state is restored\n"
@@ -696,12 +698,21 @@ static void *keyer_thread(void *arg)
     const int64_t dit_ns = (int64_t)llround(1.2e9 / wpm);
     const int64_t dah_ns = dit_ns * 3;
     const int64_t space_ns = dit_ns;
+    /*
+     * Idle gaps longer than seven dits between characters are word gaps,
+     * per the ITU standard (1 dit between elements, 3 between characters,
+     * 7 between words).
+     */
+    const int64_t word_gap_ns = dit_ns * 7;
 
     int last_was_dit = 0;
     int dit_mem = 0;
     int dah_mem = 0;
     char sym[16];
     size_t sym_len = 0;
+    int64_t gap_start = 0;    /* mono_ns() when the current idle gap began */
+    int printed_char = 0;     /* at least one decoded character printed */
+    int space_emitted = 0;    /* space already printed for this idle gap */
 
     while (keep_running()) {
         int dit_event;
@@ -749,12 +760,27 @@ static void *keyer_thread(void *arg)
                     char ch = morse_decode(sym, sym_len);
 
                     /* Unknown symbols are dropped. */
-                    if (ch != '?')
+                    if (ch != '?') {
                         fputc(ch, stdout);
+                        printed_char = 1;
+                    }
 
                     fflush(stdout);
                 }
                 sym_len = 0;
+            }
+
+            /*
+             * Decode display: an idle gap longer than seven dits (the ITU
+             * word gap) between characters is a word gap; print a single
+             * space for it.
+             */
+            if (do_decode && gap_start > 0 &&
+                printed_char && !space_emitted &&
+                (mono_ns() - gap_start) > word_gap_ns) {
+                fputc(' ', stdout);
+                fflush(stdout);
+                space_emitted = 1;
             }
 
             /*
@@ -776,6 +802,8 @@ static void *keyer_thread(void *arg)
 
         ASTORE(key_on, 0);
         last_was_dit = send_dit;
+        gap_start = mono_ns();
+        space_emitted = 0;
 
         watch_ns(space_ns, &seen_dit, &seen_dah);
 

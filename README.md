@@ -36,7 +36,7 @@ First check for the correct device: `sudo libinput list-devices` or `sudo evtest
 ```
 Paddle defaults are left ctrl (dit) and right ctrl (dah). Running `./cwkeyer` with no arguments lists the known key names; raw evdev key codes work too.
 
-While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty); the previous terminal state is restored on exit. With `decode`, each keyed symbol is printed as text as you key, without newlines; unknown symbols are ignored.
+While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty); the previous terminal state is restored on exit. With `decode`, each keyed symbol is printed as text as you key, without newlines; unknown symbols are ignored. Pausing for more than seven dits between characters (the ITU word gap) prints a single space, so word breaks you key by hand appear as spaces.
 
 ## Environment
 - `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`.
