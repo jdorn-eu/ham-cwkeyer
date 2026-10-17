@@ -983,7 +983,8 @@ static void *evdev_thread(void *arg)
                 }
 
                 if (n < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    /* EWOULDBLOCK is the same value as EAGAIN on Linux. */
+                    if (errno == EAGAIN)
                         break;
 
                     if (errno == EINTR)
@@ -1458,7 +1459,8 @@ static void generate_audio(int16_t *buf, size_t frames,
                 gain = 1.0;
         }
 
-        buf[i] = gain ? (int16_t)(gain * amplitude * sin(state->phase)) : 0;
+        /* gain is exactly 0 during silence, so this is 0 then. */
+        buf[i] = (int16_t)(gain * amplitude * sin(state->phase));
         state->phase += phase_inc;
         if (state->phase >= two_pi)
             state->phase -= two_pi;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Signal handling and terminal-cleanup tests. */
+int cwkeyer_program_main(int argc, char **argv);
 #define main cwkeyer_program_main
 #include "../cwkeyer.c"
 #undef main

@@ -28,6 +28,8 @@ The mark queue is bounded. If audio falls far enough behind to fill it, the prog
 
 ## Tests
 
+The build is deliberately strict by default: `-Werror` plus a broad warning set (including `-Wconversion`, `-Wsign-conversion`, `-Wshadow`, `-Wcast-qual`, and `-Wdouble-promotion`). Pass `make WERROR=` to build despite warnings on an unknown toolchain. `make analyze` runs GCC's `-fanalyzer`.
+
 `make test` builds and runs three hardware-independent suites; it does not touch your input device, audio routing, or sound server:
 
 - `tests/test_keyer.c` — the iambic core (the N and A memory tests, the mode A/mode B `K`/`C` difference, held-paddle repeats, alternating squeezes), paddle debouncing (glitches rejected, bounce collapsed to one transition), evdev event parsing (press/release, autorepeat ignored, `SYN_DROPPED` resync), the decode display (character and word gaps, unknown symbols dropped), the PCM renderer (envelope, spacing across buffer boundaries, late marks, high-speed ramp), and a short run of the real `keyer_thread` to check mark sequencing.
@@ -47,8 +49,9 @@ Mode behaviour follows the primary sources: the Curtis Electro Devices *8044 Ser
 ## Build
 ```
 sudo dnf install gcc alsa-lib-devel
-make
+make        # strict build (-Werror plus a broad warning set)
 make test   # iambic, debounce, evdev, decode, driver, signal, and script checks
+make analyze # GCC -fanalyzer
 ```
 
 In order for your user session to be able to access the adapter input, set proper udev rules:

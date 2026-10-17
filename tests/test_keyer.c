@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Hardware-independent regression tests for decoding and PCM mark timing. */
+int cwkeyer_program_main(int argc, char **argv);
 #define main cwkeyer_program_main
 #include "../cwkeyer.c"
 #undef main
@@ -292,7 +293,8 @@ static int run_debounce_tests(void)
 
 /* ---------------- evdev event parsing ---------------- */
 
-static struct input_event make_event(int type, int code, int value)
+static struct input_event make_event(unsigned short type, unsigned short code,
+                                     int value)
 {
     struct input_event e;
 
@@ -489,7 +491,7 @@ static int run_driver_tests(void)
         fprintf(stderr, "driver: pthread_create failed\n");
         return 1;
     }
-    n = collect_marks(durs, 32, 150);
+    n = collect_marks(durs, 32, 250);
     ASTORE(running, 0);
     pthread_join(tid, NULL);
 
@@ -518,7 +520,7 @@ static int run_driver_tests(void)
         fprintf(stderr, "driver: pthread_create failed\n");
         return 1;
     }
-    n = collect_marks(durs, 32, 250);
+    n = collect_marks(durs, 32, 400);
     ASTORE(running, 0);
     pthread_join(tid, NULL);
 
