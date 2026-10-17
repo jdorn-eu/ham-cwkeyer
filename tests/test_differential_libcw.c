@@ -6,8 +6,7 @@
  *
  * UnixCW's default (curtis_mode_b = false) is, despite the name, the true
  * Accu-keyer/type B latch logic, so it is a useful independent reference for
- * our mode B. It does not implement the true type A edge-memory rule, so
- * mode A is not covered here.
+ * our mode B core.
  *
  * UnixCW is GPL-2.0-or-later, which is compatible with this project's
  * GPL-3.0-or-later.
@@ -85,8 +84,6 @@ int main(void)
         cw_key_register_generator(key, gen);
         /* libcw's default, which is the true type B latch model. */
         cw_key_ik_disable_curtis_mode_b(key);
-
-        mine.mode_b = 1;
 
         for (int step = 0; step < 16; step++) {
             if (rng() & 1) {

@@ -59,126 +59,116 @@ static int expect_seq(const char *name, const seq_t *got, const char *want)
 
 /*
  * Reference behaviour from the Curtis 8044 application note and DJ5IL's
- * "All About Squeeze-Keying":
+ * "All About Squeeze-Keying", for the type B logic this project implements:
  *
- *   N: tap dash then dot and release during the dash gives "-." in both
- *      modes (dash memory).
- *   K/C: squeeze and release during the second dash. Type A completes the
- *      dash -> "-." + dash = "-.-" (K). Type B also emits the pending
- *      opposite dot -> "-.-." (C).
+ *   N: tap dash then dot and release during the dash gives "-." (dash
+ *      memory).
+ *   A: tap dot then dash and release during the dot gives ".-" (dot
+ *      memory).
+ *   C: squeeze and release during the second dash leaves the opposite
+ *      latch set and emits the extra dot -> "-.-.".
  */
 static int run_iambic_tests(void)
 {
     int failures = 0;
+    keyer_t k;
+    seq_t s;
 
-    for (int mode = 0; mode <= 1; mode++) {
-        keyer_t k;
-        seq_t s;
-
-        /* Lone dit and lone dah stop after one element. */
-        memset(&k, 0, sizeof(k));
-        k.mode_b = mode;
-        s = (seq_t){0};
-        keyer_core_paddles(&k, 1, 0);
-        emit(&s, &k);
-        keyer_core_paddles(&k, 0, 0);
-        advance(&k);
-        if (k.state != KY_IDLE) {
-            fprintf(stderr, "iambic: lone dit did not stop\n");
-            failures++;
-        }
-        failures += expect_seq("lone dit", &s, ".");
-
-        memset(&k, 0, sizeof(k));
-        k.mode_b = mode;
-        s = (seq_t){0};
-        keyer_core_paddles(&k, 0, 1);
-        emit(&s, &k);
-        keyer_core_paddles(&k, 0, 0);
-        advance(&k);
-        if (k.state != KY_IDLE) {
-            fprintf(stderr, "iambic: lone dah did not stop\n");
-            failures++;
-        }
-        failures += expect_seq("lone dah", &s, "-");
-
-        /* N: dash, then dot, released during the dash. */
-        memset(&k, 0, sizeof(k));
-        k.mode_b = mode;
-        s = (seq_t){0};
-        keyer_core_paddles(&k, 0, 1);
-        emit(&s, &k);
-        keyer_core_paddles(&k, 1, 1);
-        keyer_core_paddles(&k, 0, 0);
-        advance(&k);
-        emit(&s, &k);
-        advance(&k);
-        emit(&s, &k);
-        failures += expect_seq("N", &s, "-.");
-
-        /* A: dot, then dash, released during the dot. */
-        memset(&k, 0, sizeof(k));
-        k.mode_b = mode;
-        s = (seq_t){0};
-        keyer_core_paddles(&k, 1, 0);
-        emit(&s, &k);
-        keyer_core_paddles(&k, 1, 1);
-        keyer_core_paddles(&k, 0, 0);
-        advance(&k);
-        emit(&s, &k);
-        advance(&k);
-        emit(&s, &k);
-        failures += expect_seq("A", &s, ".-");
-
-        /* K/C: squeeze, release during the second dash. */
-        memset(&k, 0, sizeof(k));
-        k.mode_b = mode;
-        s = (seq_t){0};
-        keyer_core_paddles(&k, 0, 1);
-        emit(&s, &k);
-        keyer_core_paddles(&k, 1, 1);
-        advance(&k);
-        emit(&s, &k);
-        advance(&k);
-        emit(&s, &k);
-        keyer_core_paddles(&k, 0, 0);
-        advance(&k);
-        emit(&s, &k);
-        advance(&k);
-        emit(&s, &k);
-        failures += expect_seq("K/C", &s, mode ? "-.-." : "-.-");
-
-        /* Held levers repeat; a held squeeze alternates. */
-        memset(&k, 0, sizeof(k));
-        k.mode_b = mode;
-        s = (seq_t){0};
-        keyer_core_paddles(&k, 1, 0);
-        for (int i = 0; i < 4; i++) {
-            emit(&s, &k);
-            advance(&k);
-        }
-        failures += expect_seq("hold dit", &s, "....");
-
-        memset(&k, 0, sizeof(k));
-        k.mode_b = mode;
-        s = (seq_t){0};
-        keyer_core_paddles(&k, 0, 1);
-        for (int i = 0; i < 4; i++) {
-            emit(&s, &k);
-            advance(&k);
-        }
-        failures += expect_seq("hold dah", &s, "----");
-
-        memset(&k, 0, sizeof(k));
-        k.mode_b = mode;
-        s = (seq_t){0};
-        keyer_core_paddles(&k, 1, 1);
-        for (int i = 0; i < 6; i++) {
-            emit(&s, &k);
-            advance(&k);
-        }
-        failures += expect_seq("squeeze alternates", &s, ".-.-.-");
+    /* Lone dit and lone dah stop after one element. */
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    keyer_core_paddles(&k, 1, 0);
+    emit(&s, &k);
+    keyer_core_paddles(&k, 0, 0);
+    advance(&k);
+    if (k.state != KY_IDLE) {
+        fprintf(stderr, "iambic: lone dit did not stop\n");
+        failures++;
     }
+    failures += expect_seq("lone dit", &s, ".");
+
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    keyer_core_paddles(&k, 0, 1);
+    emit(&s, &k);
+    keyer_core_paddles(&k, 0, 0);
+    advance(&k);
+    if (k.state != KY_IDLE) {
+        fprintf(stderr, "iambic: lone dah did not stop\n");
+        failures++;
+    }
+    failures += expect_seq("lone dah", &s, "-");
+
+    /* N: dash, then dot, released during the dash. */
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    keyer_core_paddles(&k, 0, 1);
+    emit(&s, &k);
+    keyer_core_paddles(&k, 1, 1);
+    keyer_core_paddles(&k, 0, 0);
+    advance(&k);
+    emit(&s, &k);
+    advance(&k);
+    emit(&s, &k);
+    failures += expect_seq("N", &s, "-.");
+
+    /* A: dot, then dash, released during the dot. */
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    keyer_core_paddles(&k, 1, 0);
+    emit(&s, &k);
+    keyer_core_paddles(&k, 1, 1);
+    keyer_core_paddles(&k, 0, 0);
+    advance(&k);
+    emit(&s, &k);
+    advance(&k);
+    emit(&s, &k);
+    failures += expect_seq("A", &s, ".-");
+
+    /* C: squeeze, release during the second dash. */
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    keyer_core_paddles(&k, 0, 1);
+    emit(&s, &k);
+    keyer_core_paddles(&k, 1, 1);
+    advance(&k);
+    emit(&s, &k);
+    advance(&k);
+    emit(&s, &k);
+    keyer_core_paddles(&k, 0, 0);
+    advance(&k);
+    emit(&s, &k);
+    advance(&k);
+    emit(&s, &k);
+    failures += expect_seq("C", &s, "-.-.");
+
+    /* Held levers repeat; a held squeeze alternates. */
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    keyer_core_paddles(&k, 1, 0);
+    for (int i = 0; i < 4; i++) {
+        emit(&s, &k);
+        advance(&k);
+    }
+    failures += expect_seq("hold dit", &s, "....");
+
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    keyer_core_paddles(&k, 0, 1);
+    for (int i = 0; i < 4; i++) {
+        emit(&s, &k);
+        advance(&k);
+    }
+    failures += expect_seq("hold dah", &s, "----");
+
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    keyer_core_paddles(&k, 1, 1);
+    for (int i = 0; i < 6; i++) {
+        emit(&s, &k);
+        advance(&k);
+    }
+    failures += expect_seq("squeeze alternates", &s, ".-.-.-");
 
     return failures;
 }
@@ -286,7 +276,6 @@ static int run_debounce_tests(void)
     debounce_ns = tau;
 
     keyer_t k = {0};
-    k.mode_b = 1;
     keyer_sample(&k, 1, 0, 0);
     keyer_sample(&k, 0, 0, 1000000);
     keyer_sample(&k, 0, 0, 2000000);
@@ -296,7 +285,6 @@ static int run_debounce_tests(void)
     }
 
     k = (keyer_t){0};
-    k.mode_b = 1;
     keyer_sample(&k, 1, 0, 0);
     keyer_sample(&k, 1, 0, 3000000);
     if (keyer_symbol(&k) != -1) {
@@ -683,29 +671,6 @@ static int run_arg_tests(void)
     if (parse_uint_env("CW_TEST_UINT", 3, 0, 50) != 3)
         failures++;
 
-    /* parse_mode_env. */
-    do_mode_b = 1;
-    setenv("CW_KEYER_MODE", "a", 1);
-    parse_mode_env();
-    if (do_mode_b != 0)
-        failures++;
-    setenv("CW_KEYER_MODE", "B", 1);
-    parse_mode_env();
-    if (do_mode_b != 1)
-        failures++;
-    setenv("CW_KEYER_MODE", "mode_a", 1);
-    parse_mode_env();
-    if (do_mode_b != 0)
-        failures++;
-    setenv("CW_KEYER_MODE", "bogus", 1);
-    saved = quiet_stderr();
-    parse_mode_env();
-    unquiet_stderr(saved);
-    if (do_mode_b != 0)
-        failures++;
-    unsetenv("CW_KEYER_MODE");
-    do_mode_b = 1;
-
     /* lookup_key: names, case, numeric, and unknown. */
     if (lookup_key("COMMA") != KEY_COMMA)
         failures++;
@@ -733,6 +698,82 @@ static int run_arg_tests(void)
         failures++;
     if (ns_to_frames(0, 48000) != 0)
         failures++;
+
+    return failures;
+}
+
+/* ---------------- runtime controls ---------------- */
+
+static int run_control_tests(void)
+{
+    int failures = 0;
+    int saved = quiet_stderr();
+    double saved_wpm = ALOAD(wpm);
+    double saved_freq = ALOAD(freq_hz);
+    int saved_volume = ALOAD(volume_percent);
+    const double freq_max = (double)audio_rate / 2.0 - 1.0;
+
+    wpm = 12.0;
+    freq_hz = 800.0;
+    volume_percent = 70;
+
+    control_key(']');
+    if (!nearly(ALOAD(wpm), 13.0))
+        failures++;
+    control_key('[');
+    if (!nearly(ALOAD(wpm), 12.0))
+        failures++;
+
+    wpm = 300.0;
+    control_key(']');
+    if (!nearly(ALOAD(wpm), 300.0))
+        failures++;
+    wpm = 1.0;
+    control_key('[');
+    if (!nearly(ALOAD(wpm), 1.0))
+        failures++;
+
+    freq_hz = 800.0;
+    control_key('=');
+    if (!nearly(ALOAD(freq_hz), 810.0))
+        failures++;
+    control_key('-');
+    if (!nearly(ALOAD(freq_hz), 800.0))
+        failures++;
+    freq_hz = 1.0;
+    control_key('-');
+    if (!nearly(ALOAD(freq_hz), 1.0))
+        failures++;
+    freq_hz = freq_max;
+    control_key('=');
+    if (!nearly(ALOAD(freq_hz), freq_max))
+        failures++;
+
+    volume_percent = 70;
+    control_key('0');
+    if (ALOAD(volume_percent) != 75)
+        failures++;
+    control_key('9');
+    if (ALOAD(volume_percent) != 70)
+        failures++;
+    volume_percent = 100;
+    control_key('0');
+    if (ALOAD(volume_percent) != 100)
+        failures++;
+    volume_percent = 0;
+    control_key('9');
+    if (ALOAD(volume_percent) != 0)
+        failures++;
+
+    control_key('x');
+    if (!nearly(ALOAD(wpm), 1.0) || !nearly(ALOAD(freq_hz), freq_max) ||
+        ALOAD(volume_percent) != 0)
+        failures++;
+
+    wpm = saved_wpm;
+    freq_hz = saved_freq;
+    volume_percent = saved_volume;
+    unquiet_stderr(saved);
 
     return failures;
 }
@@ -883,11 +924,51 @@ int main(void)
         failures++;
     }
 
+    /* Level control scales the PCM amplitude. */
+    wpm = 12;
+    freq_hz = 800;
+    volume_percent = 50;
+    audio_state_t half = {0};
+    int peak = 0;
+    half.gap_frames = 4800;
+    queue_mark(start_ns + 2000000000LL, 100000000LL);
+    render_blocked(samples, 4800, &half, AUDIO_RATE);
+    for (size_t i = 0; i < 4800; i++) {
+        int v = samples[i] < 0 ? -samples[i] : samples[i];
+        if (v > peak)
+            peak = v;
+    }
+    if (peak < 16000 || peak > 16500) {
+        fprintf(stderr, "level control did not scale the PCM peak (%d)\n",
+                peak);
+        failures++;
+    }
+
+    /* Full level must stay inside the 16-bit range. */
+    volume_percent = 100;
+    audio_state_t full = {0};
+    int peak_full = 0;
+    full.gap_frames = 4800;
+    queue_mark(start_ns + 3000000000LL, 100000000LL);
+    render_blocked(samples, 4800, &full, AUDIO_RATE);
+    for (size_t i = 0; i < 4800; i++) {
+        int v = samples[i] < 0 ? -samples[i] : samples[i];
+        if (v > peak_full)
+            peak_full = v;
+    }
+    if (peak_full < 32000 || peak_full > 32767) {
+        fprintf(stderr, "full level left the 16-bit range (%d)\n",
+                peak_full);
+        failures++;
+    }
+    volume_percent = 70;
+
     failures += run_iambic_tests();
     failures += run_debounce_tests();
     failures += run_evdev_tests();
     failures += run_decode_tests();
     failures += run_arg_tests();
+    failures += run_control_tests();
     failures += run_driver_tests();
     failures += run_main_tests();
 

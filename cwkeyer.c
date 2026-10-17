@@ -25,7 +25,7 @@
  * Environment:
  *   CW_ALSA_DEVICE=pulse            ALSA PCM to open. Default: "pulse".
  *   CW_ALSA_LATENCY_US=20000        Requested ALSA latency in microseconds.
- *   CW_KEYER_MODE=b                 Curtis iambic mode "a" or "b".
+ *   CW_KEYER_LEVEL=70               Sidetone level, percent of full scale.
  *   CW_KEYER_DEBOUNCE_MS=10         Paddle RC filter time constant, 0..50 ms.
  *   PULSE_SINK=cw_out               If the device is "pulse" and PULSE_SINK is
  *                                   unset or empty, it defaults to "cw_out"
@@ -81,14 +81,19 @@ enum {
     AUDIO_PERIOD_FRAMES = 128
 };
 
-static double wpm = 12.0;
-static double freq_hz = 800.0;
+static _Atomic double wpm = 12.0;
+static _Atomic double freq_hz = 800.0;
+
+/* Sidetone level, percent of full-scale PCM. */
+static _Atomic int volume_percent = 70;
+
+/* Negotiated output rate; set before the control thread starts. */
+static unsigned int audio_rate = AUDIO_RATE;
 
 static int dit_code = KEY_LEFTCTRL;
 static int dah_code = KEY_RIGHTCTRL;
 static int do_grab = 1;
 static int do_decode = 0;
-static int do_mode_b = 1;   /* Curtis 8044 mode B is the default */
 
 /*
  * Paddle RC filter time constant.  This models the 8044's external 1M/0.01uF
@@ -356,12 +361,13 @@ static void usage(const char *prog)
         "\n"
         "While running, terminal echo is disabled so keystrokes do not\n"
         "print in the window; the previous terminal state is restored\n"
-        "on exit.\n"
+        "on exit.  If stdin is readable, [ ] change speed, - = change\n"
+        "pitch, and 9 0 change the level.\n"
         "\n"
         "Environment:\n"
         "  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
         "  CW_ALSA_LATENCY_US=20000   Requested ALSA latency in us\n"
-        "  CW_KEYER_MODE=b            Curtis iambic mode, a or b\n"
+        "  CW_KEYER_LEVEL=70          Sidetone level, percent of full scale\n"
         "  CW_KEYER_DEBOUNCE_MS=10    Paddle RC filter time constant, 0..50 ms\n"
         "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
         "                             unset, it defaults to cw_out (created by\n"
@@ -415,30 +421,6 @@ static unsigned int parse_uint_env(const char *name,
     }
 
     return (unsigned int)v;
-}
-
-/*
- * CW_KEYER_MODE selects the Curtis iambic timing: "a" or "b" (default b).
- */
-static void parse_mode_env(void)
-{
-    const char *s = getenv("CW_KEYER_MODE");
-
-    if (!s || !*s)
-        return;
-
-    if (strcasecmp(s, "a") == 0 ||
-        strcasecmp(s, "modea") == 0 ||
-        strcasecmp(s, "mode_a") == 0) {
-        do_mode_b = 0;
-    } else if (strcasecmp(s, "b") == 0 ||
-               strcasecmp(s, "modeb") == 0 ||
-               strcasecmp(s, "mode_b") == 0) {
-        do_mode_b = 1;
-    } else {
-        fprintf(stderr,
-                "warning: ignoring invalid CW_KEYER_MODE='%s'; use a or b\n", s);
-    }
 }
 
 /*
@@ -564,19 +546,12 @@ static void sleep_ns(int64_t ns)
 /*
  * Curtis 8044 iambic keyer core.
  *
- * Two behaviours are implemented, matching the original keyers that the
- * 8044ABM selected between:
- *
- *   Mode B (the Accu-keyer / 8044ABM "B"): the dot and dash latches are set
- *   whenever their lever is closed and cleared at the end of that element if
- *   the lever is open. Only the latches select elements, so releasing a
- *   squeeze leaves the opposite latch set and one extra element goes out.
- *   This is what most transceivers mean by "Curtis mode B".
- *
- *   Mode A (the original Curtis / 8044 "A"): plain iambic selection from
- *   the lever levels, plus an edge-triggered memory: a fresh press of the
- *   opposite lever during an element injects one extra opposite element even
- *   if the lever is released before the element ends.
+ * This project implements the type B behaviour (the Accu-keyer / 8044ABM
+ * "B"): the dot and dash latches are set whenever their lever is closed and
+ * cleared at the end of that element if the lever is open.  Only the latches
+ * select elements, so releasing a squeeze leaves the opposite latch set and
+ * one extra element goes out.  This is what most transceivers mean by
+ * "Curtis mode B".  Type A is deliberately out of scope.
  *
  * keyer_core_step() is called once at the end of every mark and once at the
  * end of every inter-element space.
@@ -609,20 +584,13 @@ typedef struct {
 
 typedef struct {
     keyer_state_t state;
-    int mode_b;
 
     int dot_paddle;
     int dash_paddle;
-    int prev_dot;
-    int prev_dash;
 
     /* Mode B level latches. */
     int dot_latch;
     int dash_latch;
-
-    /* Mode A edge memories. */
-    int dot_mem;
-    int dash_mem;
 
     /* Input RC filtering. */
     debounce_t dit_debounce;
@@ -639,16 +607,6 @@ static int keyer_symbol(const keyer_t *keyer)
         return 0;
 
     return -1;
-}
-
-static int keyer_in_dot_element(const keyer_t *keyer)
-{
-    return keyer->state == KY_IN_DOT || keyer->state == KY_AFTER_DOT;
-}
-
-static int keyer_in_dash_element(const keyer_t *keyer)
-{
-    return keyer->state == KY_IN_DASH || keyer->state == KY_AFTER_DASH;
 }
 
 /*
@@ -668,83 +626,47 @@ static void keyer_core_step(keyer_t *keyer)
     }
 
     if (keyer->state == KY_AFTER_DOT) {
-        if (keyer->mode_b) {
-            if (!keyer->dot_paddle)
-                keyer->dot_latch = 0;
+        if (!keyer->dot_paddle)
+            keyer->dot_latch = 0;
 
-            if (keyer->dash_latch)
-                keyer->state = KY_IN_DASH;
-            else if (keyer->dot_latch)
-                keyer->state = KY_IN_DOT;
-            else
-                keyer->state = KY_IDLE;
-        } else {
-            /* The dot element that just finished consumes the dot memory. */
-            keyer->dot_mem = 0;
-
-            if (keyer->dash_paddle || keyer->dash_mem)
-                keyer->state = KY_IN_DASH;
-            else if (keyer->dot_paddle)
-                keyer->state = KY_IN_DOT;
-            else
-                keyer->state = KY_IDLE;
-        }
+        if (keyer->dash_latch)
+            keyer->state = KY_IN_DASH;
+        else if (keyer->dot_latch)
+            keyer->state = KY_IN_DOT;
+        else
+            keyer->state = KY_IDLE;
         return;
     }
 
     if (keyer->state == KY_AFTER_DASH) {
-        if (keyer->mode_b) {
-            if (!keyer->dash_paddle)
-                keyer->dash_latch = 0;
+        if (!keyer->dash_paddle)
+            keyer->dash_latch = 0;
 
-            if (keyer->dot_latch)
-                keyer->state = KY_IN_DOT;
-            else if (keyer->dash_latch)
-                keyer->state = KY_IN_DASH;
-            else
-                keyer->state = KY_IDLE;
-        } else {
-            keyer->dash_mem = 0;
-
-            if (keyer->dot_paddle || keyer->dot_mem)
-                keyer->state = KY_IN_DOT;
-            else if (keyer->dash_paddle)
-                keyer->state = KY_IN_DASH;
-            else
-                keyer->state = KY_IDLE;
-        }
+        if (keyer->dot_latch)
+            keyer->state = KY_IN_DOT;
+        else if (keyer->dash_latch)
+            keyer->state = KY_IN_DASH;
+        else
+            keyer->state = KY_IDLE;
         return;
     }
 }
 
 /*
- * Record the current paddle values. Mode B sets its level latches; mode A
- * remembers a fresh press of the opposite lever that lands while an element
- * is being generated.
+ * Record the current paddle values and set the mode B level latches.
  */
 static void keyer_core_paddles(keyer_t *keyer, int dot_down, int dash_down)
 {
     dot_down = !!dot_down;
     dash_down = !!dash_down;
 
-    if (!keyer->mode_b) {
-        if (dot_down && !keyer->prev_dot && keyer_in_dash_element(keyer))
-            keyer->dot_mem = 1;
-        if (dash_down && !keyer->prev_dash && keyer_in_dot_element(keyer))
-            keyer->dash_mem = 1;
-    }
-    keyer->prev_dot = dot_down;
-    keyer->prev_dash = dash_down;
-
     keyer->dot_paddle = dot_down;
     keyer->dash_paddle = dash_down;
 
-    if (keyer->mode_b) {
-        if (dot_down)
-            keyer->dot_latch = 1;
-        if (dash_down)
-            keyer->dash_latch = 1;
-    }
+    if (dot_down)
+        keyer->dot_latch = 1;
+    if (dash_down)
+        keyer->dash_latch = 1;
 
     if (keyer->state == KY_IDLE && (dot_down || dash_down)) {
         /*
@@ -1279,25 +1201,33 @@ static void *keyer_thread(void *arg)
 {
     (void)arg;
 
-    const int64_t dit_ns = (int64_t)llround(1.2e9 / wpm);
-    const int64_t dah_ns = dit_ns * 3;
-    const int64_t space_ns = dit_ns;
-    /*
-     * Idle gaps longer than seven dits between characters are word gaps,
-     * per the ITU standard (1 dit between elements, 3 between characters,
-     * 7 between words).
-     */
-    const int64_t word_gap_ns = dit_ns * 7;
-    const int64_t char_gap_ns = dit_ns * 3;
-
     keyer_t keyer = {0};
-    keyer.mode_b = do_mode_b;
     keyer.state = KY_IDLE;
 
     decode_state_t dec = {0};
     int64_t prev_expected_start = 0;
+    int64_t last_dit_ns = -1;
 
     while (keep_running()) {
+        /* Read the live speed each time so runtime changes apply to the next
+         * element without restarting the thread. */
+        const int64_t dit_ns = (int64_t)llround(1.2e9 / wpm);
+        const int64_t dah_ns = dit_ns * 3;
+        const int64_t space_ns = dit_ns;
+        /*
+         * Idle gaps longer than seven dits between characters are word gaps,
+         * per the ITU standard (1 dit between elements, 3 between characters,
+         * 7 between words).
+         */
+        const int64_t word_gap_ns = dit_ns * 7;
+        const int64_t char_gap_ns = dit_ns * 3;
+
+        if (dit_ns != last_dit_ns) {
+            /* A speed change makes the previous element's nominal start
+             * meaningless for the overrun diagnostic. */
+            prev_expected_start = 0;
+            last_dit_ns = dit_ns;
+        }
         if (keyer.state == KY_IDLE) {
             /* A new burst; don't measure this start against the last one. */
             prev_expected_start = 0;
@@ -1507,6 +1437,8 @@ typedef struct {
     int has_pending;
     int has_mark;
     double phase;
+    double phase_inc;
+    double amplitude;
 } audio_state_t;
 
 static uint64_t ns_to_frames(int64_t ns, unsigned int rate)
@@ -1518,9 +1450,6 @@ static void generate_audio(int16_t *buf, size_t frames,
                            audio_state_t *state, unsigned int rate)
 {
     const double two_pi = 2.0 * M_PI;
-    const double phase_inc = two_pi * freq_hz / rate;
-    /* Match UnixCW's default 70% of the 16-bit PCM amplitude range. */
-    const double amplitude = (70 * 32768) / 100;
 
     for (size_t i = 0; i < frames; i++, state->frame++) {
         double gain = 0.0;
@@ -1530,7 +1459,7 @@ static void generate_audio(int16_t *buf, size_t frames,
             /* Re-anchor after a long idle period to avoid accumulating
              * drift between the monotonic and PCM playback clocks. */
             if (!state->has_mark || state->pending.start_ns - state->anchor_ns >
-                (int64_t)llround(1.2e9 / wpm) * 7) {
+                (int64_t)llround(1.2e9 / ALOAD(wpm)) * 7) {
                 state->anchor_ns = state->pending.start_ns;
                 state->anchor_frame = state->frame;
             }
@@ -1549,10 +1478,16 @@ static void generate_audio(int16_t *buf, size_t frames,
             state->mark_end = state->frame + mark_frames;
             state->anchor_ns = state->pending.start_ns;
             state->anchor_frame = state->frame;
+            /* Speed, pitch, and level changes take effect at the start of
+             * the next mark, so a change cannot step the tone mid-envelope. */
+            state->gap_frames = ns_to_frames(
+                (int64_t)llround(1.2e9 / ALOAD(wpm)), rate);
             state->ramp_frames = ns_to_frames(tone_ramp_ns(
-                (int64_t)llround(1.2e9 / wpm)), rate);
+                (int64_t)llround(1.2e9 / ALOAD(wpm))), rate);
             if (state->ramp_frames > mark_frames / 2)
                 state->ramp_frames = mark_frames / 2;
+            state->phase_inc = two_pi * ALOAD(freq_hz) / rate;
+            state->amplitude = (ALOAD(volume_percent) * 32767.0) / 100.0;
             state->has_mark = 1;
             state->has_pending = 0;
         }
@@ -1569,11 +1504,132 @@ static void generate_audio(int16_t *buf, size_t frames,
         }
 
         /* gain is exactly 0 during silence, so this is 0 then. */
-        buf[i] = (int16_t)(gain * amplitude * sin(state->phase));
-        state->phase += phase_inc;
+        buf[i] = (int16_t)(gain * state->amplitude * sin(state->phase));
+        state->phase += state->phase_inc;
         if (state->phase >= two_pi)
             state->phase -= two_pi;
     }
+}
+
+/*
+ * Runtime control from stdin.  These keys are easy to reach while keying
+ * and do not collide with the default paddle keys:
+ *
+ *   [ / ]   slower / faster
+ *   - / =   lower / higher pitch
+ *   9 / 0   quieter / louder
+ *
+ * They only work when stdin is a readable terminal or pipe.  Startup values
+ * come from the command line and environment as before.
+ */
+static void control_key(char key)
+{
+    int changed = 0;
+    double value;
+    int volume;
+
+    switch (key) {
+    case '[':
+        value = ALOAD(wpm) - 1.0;
+        if (value < 1.0)
+            value = 1.0;
+        wpm = value;
+        changed = 1;
+        break;
+
+    case ']':
+        value = ALOAD(wpm) + 1.0;
+        if (value > 300.0)
+            value = 300.0;
+        wpm = value;
+        changed = 1;
+        break;
+
+    case '-':
+        value = ALOAD(freq_hz) - 10.0;
+        if (value < 1.0)
+            value = 1.0;
+        freq_hz = value;
+        changed = 1;
+        break;
+
+    case '=':
+    case '+':
+        value = ALOAD(freq_hz) + 10.0;
+        if (value > (double)audio_rate / 2.0 - 1.0)
+            value = (double)audio_rate / 2.0 - 1.0;
+        freq_hz = value;
+        changed = 1;
+        break;
+
+    case '9':
+        volume = ALOAD(volume_percent) - 5;
+        if (volume < 0)
+            volume = 0;
+        volume_percent = volume;
+        changed = 1;
+        break;
+
+    case '0':
+        volume = ALOAD(volume_percent) + 5;
+        if (volume > 100)
+            volume = 100;
+        volume_percent = volume;
+        changed = 1;
+        break;
+
+    default:
+        break;
+    }
+
+    if (changed)
+        fprintf(stderr, "[%.1f WPM, %.0f Hz, %d%%]\n",
+                ALOAD(wpm), ALOAD(freq_hz), ALOAD(volume_percent));
+}
+
+static void *control_thread(void *arg)
+{
+    char buf[64];
+
+    (void)arg;
+
+    while (keep_running()) {
+        struct pollfd pfd;
+        ssize_t n;
+        int pr;
+
+        pfd.fd = STDIN_FILENO;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+
+        pr = poll(&pfd, 1, 100);
+        if (pr < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (pr == 0)
+            continue;
+
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+            break;
+        if (!(pfd.revents & POLLIN))
+            continue;
+
+        n = read(STDIN_FILENO, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR || errno == EAGAIN)
+                continue;
+            break;
+        }
+        if (n == 0)
+            break; /* EOF or closed stdin: no runtime controls. */
+
+        for (ssize_t i = 0; i < n; i++)
+            control_key(buf[i]);
+    }
+
+    return NULL;
 }
 
 static int wait_pcm(snd_pcm_t *pcm)
@@ -1623,7 +1679,8 @@ static int audio_loop(snd_pcm_t *pcm, unsigned int actual_rate)
     int16_t buf[AUDIO_PERIOD_FRAMES];
 
     audio_state_t state = {0};
-    state.gap_frames = ns_to_frames((int64_t)llround(1.2e9 / wpm), actual_rate);
+    state.gap_frames = ns_to_frames(
+        (int64_t)llround(1.2e9 / ALOAD(wpm)), actual_rate);
 
     int rc = 0;
 
@@ -1650,6 +1707,8 @@ int main(int argc, char **argv)
 {
     pthread_t evdev_tid;
     pthread_t keyer_tid;
+    pthread_t control_tid;
+    int control_started = 0;
     snd_pcm_t *pcm;
     int err;
     int field = 0;
@@ -1733,7 +1792,7 @@ int main(int argc, char **argv)
                                      100000);
     debounce_ms = parse_uint_env("CW_KEYER_DEBOUNCE_MS", 10, 0, 50);
     debounce_ns = (int64_t)debounce_ms * 1000000LL;
-    parse_mode_env();
+    volume_percent = (int)parse_uint_env("CW_KEYER_LEVEL", 70, 0, 100);
 
     if (install_signal_handlers() < 0)
         return 1;
@@ -1747,14 +1806,14 @@ int main(int argc, char **argv)
 
     fprintf(stderr,
             "CW keyer: %.2f WPM, %.2f Hz, dit code %d, dah code %d, %s, "
-            "Curtis mode %c, RC filter %u ms%s\n",
-            wpm,
-            freq_hz,
+            "Curtis mode B, RC filter %u ms, level %d%%%s\n",
+            ALOAD(wpm),
+            ALOAD(freq_hz),
             dit_code,
             dah_code,
             do_grab ? "EVIOCGRAB enabled" : "nograb",
-            do_mode_b ? 'B' : 'A',
             debounce_ms,
+            ALOAD(volume_percent),
             do_decode ? ", decode" : "");
 
     pcm = open_audio(&actual_rate);
@@ -1763,6 +1822,7 @@ int main(int argc, char **argv)
         restore_terminal();
         return 1;
     }
+    audio_rate = actual_rate;
 
     err = pthread_create(&evdev_tid, NULL, evdev_thread, argv[1]);
     if (err != 0) {
@@ -1784,12 +1844,24 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    err = pthread_create(&control_tid, NULL, control_thread, NULL);
+    if (err != 0) {
+        fprintf(stderr,
+                "warning: pthread_create(control): %s; runtime controls "
+                "disabled\n",
+                strerror(err));
+    } else {
+        control_started = 1;
+    }
+
     audio_rc = audio_loop(pcm, actual_rate);
     if (audio_rc < 0)
         request_stop(1);
 
     request_stop(0);
     pthread_join(keyer_tid, NULL);
+    if (control_started)
+        pthread_join(control_tid, NULL);
     pthread_join(evdev_tid, NULL);
 
     snd_pcm_close(pcm);

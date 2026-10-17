@@ -5,7 +5,8 @@
 Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand adapter working as an iambic keyer in software.
 ## Design description
 - Reads evdev (/dev/input/eventX) input from adapter or alternatively keyboard input
-- Runs a Curtis 8044 iambic keyer, selectable mode A or B, with dot/dash paddle memory
+- Runs a Curtis 8044 type B iambic keyer (the Accu-keyer behaviour) with dot/dash paddle memory
+- Runtime speed, pitch, and sidetone level controls from stdin while keying
 - Renders each mark and its raised-cosine attack/release at PCM sample boundaries; late input/audio scheduling may still lengthen gaps
 - Sends the sine wave to ALSA's `pulse` device by default, with `PULSE_SINK=cw_out` for the mic-mixing setup
 
@@ -15,14 +16,9 @@ The evdev thread tracks paddle state (including presses that land between keyer 
 
 Paddle inputs are filtered with a digital approximation of the 8044's external RC network: the recommended 1 MΩ/0.01 µF network has a time constant of about 10 ms. The filter runs in the keyer's own time base, so contact bounce is smoothed and normally cannot inject extra elements. `CW_KEYER_DEBOUNCE_MS` sets the RC time constant (default 10 ms; 0 disables the filter). Lower it, for example to 5 ms, for a snappier response at high speed. As with the real RC network, a legitimate press shorter than the filter's threshold time may not be recognized; at high speeds use a shorter setting or 0.
 
-Both original Curtis keyer behaviours are implemented; `CW_KEYER_MODE` selects one:
+The keyer implements the type B (Accu-keyer) behaviour that most transceivers mean by "Curtis mode B". The dot and dash latches are set whenever their paddle closes and cleared at the end of that element if the paddle is open. Because the latches drive element selection, releasing a squeeze leaves the opposite latch set, so one extra element is keyed: squeeze and release during the second dash and you get `-.-.` (C). A held paddle repeats its element, a held squeeze alternates, and a tap of the opposite paddle during an element is remembered (the "N"/"A" tests). Type A is deliberately out of scope for this project.
 
-- **Mode B** (default; the Accu-keyer logic that the 8044ABM labelled "B"): the dot and dash memories are set whenever their paddle closes and cleared at the end of that element if the paddle is open. Because the memories drive element selection, releasing a squeeze leaves the opposite memory set, so one extra element is keyed. Squeeze and release during the second dash and you get `-.-.` (C).
-- **Mode A** (the original Curtis/8044 logic): plain iambic selection from the paddle *levels*, plus a memory set only by a fresh press of the opposite paddle during an element. The same squeeze released during the second dash stops at `-.-` (K).
-
-In both modes a held paddle repeats its element and a held squeeze alternates, and a tap of the opposite paddle during an element is remembered (the "N"/"A" tests). Note that this is *not* the same as UnixCW's libcw keyer: libcw's default is effectively type B, but it labels it mode A and its `curtis_mode_b` option adds a spurious extra element.
-
-For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate ALSA actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range. The audio renderer enforces at least a one-dit silent gap; late delivery cannot shorten a mark, but scheduling delays or ALSA underruns can make a gap longer. ALSA buffering also adds audible latency, which is separate from the generated mark length.
+For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate ALSA actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range and can be changed at startup with `CW_KEYER_LEVEL` or while running (see below). The audio renderer enforces at least a one-dit silent gap; late delivery cannot shorten a mark, but scheduling delays or ALSA underruns can make a gap longer. ALSA buffering also adds audible latency, which is separate from the generated mark length.
 
 The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements.
 
@@ -34,13 +30,13 @@ The build is deliberately strict by default: `-Werror` plus a broad warning set 
 
 `make test` builds and runs the hardware-independent suites below; it does not touch your input device, audio routing, or sound server:
 
-- `tests/test_keyer.c` — the iambic core (the N and A memory tests, the mode A/mode B `K`/`C` difference, held-paddle repeats, alternating squeezes), the RC paddle filter (glitches rejected, bounce smoothed, threshold delay), evdev event parsing (press/release, autorepeat ignored, `SYN_DROPPED` resync), the decode display (character and word gaps, unknown symbols dropped), the PCM renderer (envelope, spacing across buffer boundaries, late marks, high-speed ramp), and a short run of the real `keyer_thread` to check mark sequencing.
+- `tests/test_keyer.c` — the type B iambic core (held-paddle repeats, alternating squeezes, the N/A memory cases, and the `C` extra-element rule), the RC paddle filter (glitches rejected, bounce smoothed, threshold delay), evdev event parsing (press/release, autorepeat ignored, `SYN_DROPPED` resync), the decode display (character and word gaps, unknown symbols dropped), the PCM renderer (envelope, spacing across buffer boundaries, late marks, high-speed ramp, level scaling), and a short run of the real `keyer_thread` to check mark sequencing.
 - `tests/test_signals.c` — `SIGPIPE` ignored, a stop signal stops the loops, terminal disable/restore is idempotent on a pty, queued tty input is discarded on restore, a spurious `SIGCONT` does not re-disable echo, and `SIGTSTP`/`SIGCONT` genuinely stop and resume.
 - `tests/test_audio.c` — the audio layer against ALSA's built-in `null` PCM (no sound server or hardware): `open_audio()` opens and negotiates a rate, `pcm_write_all()` writes generated periods, `audio_loop()` runs in a thread and stops cleanly, and a missing device and an at-Nyquist tone are both rejected.
 - `tests/test_evdev.c` — `evdev_thread()` fed through a FIFO standing in for the input device: press/release update the paddle state, the press edge is latched, and state is cleared on exit.
 - `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation.
 
-The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `parse_mode_env`, `lookup_key`) and a real `main()` startup/failure/shutdown path.
+The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `lookup_key`), runtime control keys, and a real `main()` startup/failure/shutdown path.
 
 There is also an optional differential test against the real UnixCW libcw keyer: `make test-libcw` drives libcw's iambic graph and our mode B core with identical random paddle schedules and compares the element sequences (200k trials, no mismatches). It needs a built unixcw checkout; set `LIBCW_DIR` if it is not at `../unixcw-code`. It is not part of `make test` or CI because of that external dependency.
 
@@ -54,7 +50,7 @@ CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict
 
 GPL-3.0-or-later; see `LICENSE`.
 
-Mode behaviour follows the primary sources: the Curtis Electro Devices *8044 Series Keyer-on-a-Chip Application Note* and Karl Fischer (DJ5IL), *All About Squeeze-Keying*. The latter distinguishes the true type A edge-memory rule from the Accu-keyer type B latch rule in detail; only the Accu-keyer/type B behaviour is verified here against a second implementation (UnixCW libcw), which matches on 200k random paddle schedules.
+Mode behaviour follows the primary sources: the Curtis Electro Devices *8044 Series Keyer-on-a-Chip Application Note* and Karl Fischer (DJ5IL), *All About Squeeze-Keying*. The latter distinguishes the true type A edge-memory rule from the Accu-keyer type B latch rule; this project implements and verifies only the Accu-keyer/type B behaviour, against UnixCW libcw on 200k random paddle schedules.
 
 ## Build
 ```
@@ -102,10 +98,20 @@ While running, terminal echo is disabled so keystrokes don't print in the window
 
 With `decode`, each keyed symbol is printed as text as you key, without newlines; unknown symbols are ignored. Pausing for more than seven dits between characters (the ITU word gap) prints a single space, so word breaks you key by hand appear as spaces. Decoder output is written synchronously by the keyer thread, so a blocked stdout consumer can delay paddle processing; keep the output destination draining when using `decode`.
 
+## Runtime controls
+
+If stdin is a readable terminal or pipe, the keyer accepts single-key controls while it is running:
+
+- `[` / `]` — slower / faster (1 WPM per step)
+- `-` / `=` (or `+`) — lower / higher pitch (10 Hz per step)
+- `9` / `0` — quieter / louder (5% per step)
+
+Speed, pitch, and level changes take effect on the next element. The startup values come from the command line, `CW_KEYER_LEVEL`, and the usual environment variables. These control keys are read from stdin, not from the evdev paddle device, so avoid remapping a paddle to one of them.
+
 ## Environment
 - `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is set to `cw_out` by the keyer.
 - `CW_ALSA_LATENCY_US` Requested ALSA latency in microseconds. Default: `20000` (20 ms). ALSA may negotiate a different buffer/period; the achieved values are printed at startup. Smaller buffers may reduce latency but increase underrun risk.
-- `CW_KEYER_MODE` Curtis iambic mode, `a` or `b` (case-insensitive; also accepts `mode_a`/`mode_b`). Default: `b`. The mode is printed at startup.
+- `CW_KEYER_LEVEL` Sidetone level, percent of full scale, `0`–`100`. Default: `70`. The level can also be changed while running with `9` and `0`.
 - `CW_KEYER_DEBOUNCE_MS` Paddle RC filter time constant in milliseconds, `0`–`50`. Default: `10`; `0` disables the filter. The 8044's recommended 1 MΩ/0.01 µF network is about 10 ms. A press shorter than the filter's threshold time may not be recognized; lower the value for high-speed sending.
 - `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, it defaults to `cw_out`, the combined sink created by `cw-mic-mix.sh`. If you haven't run that script, set it explicitly to a real sink, e.g. `PULSE_SINK=$(pactl get-default-sink)`.
 

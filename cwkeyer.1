@@ -20,8 +20,8 @@ cwkeyer \- low-latency iambic CW sidetone keyer
 .SH DESCRIPTION
 .B cwkeyer
 reads an evdev keyboard-emulating paddle adapter and generates an ALSA
-sidetone. It implements the Curtis 8044 iambic keyer, with selectable mode
-A or B and dot/dash paddle memory, and can optionally decode the keyed text.
+sidetone. It implements the Curtis 8044 type B (Accu-keyer) iambic keyer,
+with dot/dash paddle memory, and can optionally decode the keyed text.
 .PP
 The paddle inputs are filtered with a digital approximation of the 8044's
 external RC network. The recommended 1 M\(*W/0.01 \(*mF network has a time
@@ -83,16 +83,12 @@ ALSA PCM to open (default
 Requested ALSA latency in microseconds (default 20000). ALSA may negotiate
 a different buffer and period; the achieved values are printed at startup.
 .TP
-.B CW_KEYER_MODE
-Curtis iambic mode,
-.B a
-or
-.B b
-(case-insensitive).
-.B b
-is the default. In mode B a released squeeze leaves the opposite memory set
-and one extra element is keyed; in mode A it stops at the element in
-progress.
+.B CW_KEYER_LEVEL
+Sidetone level as a percentage of full scale, 0\(en100 (default 70). The
+level can also be changed while running with
+.B 9
+and
+.BR 0 .
 .TP
 .B CW_KEYER_DEBOUNCE_MS
 Paddle RC filter time constant in milliseconds, 0\(en50 (default 10). The
@@ -108,6 +104,31 @@ and this is unset or empty, it defaults to
 .BR cw_out ,
 the combined sink created by
 .BR cw-mic-mix (1).
+.SH RUNTIME CONTROLS
+If standard input is a readable terminal or pipe,
+.B cwkeyer
+accepts these single-key controls while it is running:
+.TP
+.B [
+and
+.B ]
+Slower and faster, 1 WPM per step.
+.TP
+.B -
+and
+.B =
+(or
+.BR + )
+Lower and higher pitch, 10 Hz per step.
+.TP
+.B 9
+and
+.B 0
+Quieter and louder, 5 percent per step.
+.PP
+Changes take effect on the next element.  The controls are read from
+standard input, not from the evdev paddle device, so avoid mapping a paddle
+to one of these keys.
 .SH SIGNALS
 .B SIGINT
 and
