@@ -180,6 +180,116 @@ static int run_iambic_tests(void)
     return failures;
 }
 
+/*
+ * Debouncing: a level change is accepted only after it has been stable for
+ * the hold time, so contact bounce and short glitches never reach the core.
+ */
+static int run_debounce_tests(void)
+{
+    int failures = 0;
+    const int64_t hold = 5000000LL; /* 5 ms */
+    debounce_t d;
+    int transitions;
+    int prev;
+    int64_t t;
+
+    /* A glitch shorter than the hold time is rejected. */
+    d = (debounce_t){0};
+    debounce_update(&d, 1, 0, hold);
+    debounce_update(&d, 0, 1000000, hold);
+    if (d.stable != 0) {
+        fprintf(stderr, "debounce: short glitch was accepted\n");
+        failures++;
+    }
+
+    /* A held press is accepted only once the hold time has elapsed. */
+    d = (debounce_t){0};
+    debounce_update(&d, 1, 0, hold);
+    if (debounce_update(&d, 1, hold - 1, hold) != 0) {
+        fprintf(stderr, "debounce: press accepted too early\n");
+        failures++;
+    }
+    if (debounce_update(&d, 1, hold, hold) != 1) {
+        fprintf(stderr, "debounce: press not accepted after hold\n");
+        failures++;
+    }
+
+    /* A burst of bounce on close yields exactly one transition. */
+    d = (debounce_t){0};
+    transitions = 0;
+    prev = 0;
+    t = 0;
+    for (int i = 0; i < 12; i++, t += 250000) {
+        int st = debounce_update(&d, (i % 2 == 0) ? 1 : 0, t, hold);
+        if (st != prev) { transitions++; prev = st; }
+    }
+    for (int i = 0; i < 40; i++, t += 250000) {
+        int st = debounce_update(&d, 1, t, hold);
+        if (st != prev) { transitions++; prev = st; }
+    }
+    if (transitions != 1 || prev != 1) {
+        fprintf(stderr, "debounce: close bounce gave %d transitions\n", transitions);
+        failures++;
+    }
+
+    /* A burst of bounce on open also yields exactly one transition. */
+    d = (debounce_t){.stable = 1, .candidate = 1, .candidate_ns = 0};
+    transitions = 0;
+    prev = 1;
+    t = 0;
+    for (int i = 0; i < 12; i++, t += 250000) {
+        int st = debounce_update(&d, (i % 2 == 0) ? 0 : 1, t, hold);
+        if (st != prev) { transitions++; prev = st; }
+    }
+    for (int i = 0; i < 40; i++, t += 250000) {
+        int st = debounce_update(&d, 0, t, hold);
+        if (st != prev) { transitions++; prev = st; }
+    }
+    if (transitions != 1 || prev != 0) {
+        fprintf(stderr, "debounce: open bounce gave %d transitions\n", transitions);
+        failures++;
+    }
+
+    /* Hold 0 disables debouncing. */
+    d = (debounce_t){0};
+    if (debounce_update(&d, 1, 0, 0) != 1) {
+        fprintf(stderr, "debounce: hold 0 did not pass the level through\n");
+        failures++;
+    }
+
+    /*
+     * Through the sample path: a glitch must not start an element, and a
+     * held press must start exactly one.
+     */
+    debounce_ns = hold;
+
+    keyer_t k = {0};
+    k.mode_b = 1;
+    keyer_sample(&k, 1, 0, 0);
+    keyer_sample(&k, 0, 0, 1000000);
+    keyer_sample(&k, 0, 0, hold * 2);
+    if (keyer_symbol(&k) != -1 || k.state != KY_IDLE) {
+        fprintf(stderr, "debounce: glitch started an element\n");
+        failures++;
+    }
+
+    k = (keyer_t){0};
+    k.mode_b = 1;
+    keyer_sample(&k, 1, 0, 0);
+    keyer_sample(&k, 1, 0, hold);
+    if (keyer_symbol(&k) != 1) {
+        fprintf(stderr, "debounce: held press did not start a dit\n");
+        failures++;
+    }
+    keyer_sample(&k, 1, 0, hold + 1000000);
+    if (keyer_symbol(&k) != 1 || k.state != KY_IN_DOT) {
+        fprintf(stderr, "debounce: held press started a second element\n");
+        failures++;
+    }
+
+    return failures;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -250,6 +360,7 @@ int main(void)
     }
 
     failures += run_iambic_tests();
+    failures += run_debounce_tests();
 
     if (failures)
         fprintf(stderr, "%d test(s) failed\n", failures);

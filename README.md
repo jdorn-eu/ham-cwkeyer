@@ -11,6 +11,8 @@ Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand ad
 
 The evdev thread tracks paddle state, including short presses and recovery from dropped input events. The keyer thread runs a small state machine and watches the paddles through each mark and its following one-dit space, using monotonic deadlines for the nominal 1:3 dit/dah timing. With `decode` off, it does no Morse decoding or terminal output.
 
+Paddle inputs are debounced the way the 8044's RC input filter does it: a level change is accepted only after it has been stable for the hold time (`CW_KEYER_DEBOUNCE_MS`, default 5 ms). Contact bounce and glitches shorter than that are discarded, so they cannot inject extra elements. A real press shorter than the hold time is discarded too; at the slowest intended speeds a real tap is far longer than 5 ms. Set it to 0 to disable debouncing, or raise it for a noisy paddle (the chip's 1M/0.01µF filter is roughly 10 ms).
+
 Both original Curtis keyer behaviours are implemented; `CW_KEYER_MODE` selects one:
 
 - **Mode B** (default; the Accu-keyer logic that the 8044ABM labelled "B"): the dot and dash memories are set whenever their paddle closes and cleared at the end of that element if the paddle is open. Because the memories drive element selection, releasing a squeeze leaves the opposite memory set, so one extra element is keyed. Squeeze and release during the second dash and you get `-.-.` (C).
@@ -20,7 +22,7 @@ In both modes a held paddle repeats its element and a held squeeze alternates, a
 
 For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate ALSA actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range. The audio renderer enforces at least a one-dit silent gap; late delivery cannot shorten a mark, but scheduling delays or ALSA underruns can make a gap longer. ALSA buffering also adds audible latency, which is separate from the generated mark length.
 
-The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements. `make test` checks the iambic core (the N and A memory tests, the mode A/mode B `K`/`C` difference, held-paddle repeats, and alternating squeezes), decoding, sample-level envelope/spacing across PCM buffer boundaries, late marks, and the high-speed ramp; it does not test the evdev device or your audio routing. A live paddle/listening check is still useful after changing timing or ALSA settings.
+The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements. `make test` checks the iambic core (the N and A memory tests, the mode A/mode B `K`/`C` difference, held-paddle repeats, and alternating squeezes), paddle debouncing (glitches rejected, bounce collapsed to one transition), decoding, sample-level envelope/spacing across PCM buffer boundaries, late marks, and the high-speed ramp; it does not test the evdev device or your audio routing. A live paddle/listening check is still useful after changing timing or ALSA settings.
 
 ## License
 
@@ -66,6 +68,7 @@ With `decode`, each keyed symbol is printed as text as you key, without newlines
 - `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is set to `cw_out` by the keyer.
 - `CW_ALSA_LATENCY_US` Requested ALSA latency in microseconds. Default: `20000` (20 ms). ALSA may negotiate a different buffer/period; the achieved values are printed at startup. Smaller buffers may reduce latency but increase underrun risk.
 - `CW_KEYER_MODE` Curtis iambic mode, `a` or `b` (case-insensitive; also accepts `mode_a`/`mode_b`). Default: `b`. The mode is printed at startup.
+- `CW_KEYER_DEBOUNCE_MS` Paddle debounce hold time in milliseconds, `0`–`50`. Default: `5`; `0` disables debouncing. Any level change shorter than the hold time is treated as contact bounce and discarded.
 - `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, it defaults to `cw_out`, the combined sink created by `cw-mic-mix.sh`. If you haven't run that script, set it explicitly to a real sink, e.g. `PULSE_SINK=$(pactl get-default-sink)`.
 
 ## Combine with mic input

@@ -26,6 +26,7 @@
  *   CW_ALSA_DEVICE=pulse            ALSA PCM to open. Default: "pulse".
  *   CW_ALSA_LATENCY_US=20000        Requested ALSA latency in microseconds.
  *   CW_KEYER_MODE=b                 Curtis iambic mode "a" or "b".
+ *   CW_KEYER_DEBOUNCE_MS=5          Paddle debounce hold time, 0..50 ms.
  *   PULSE_SINK=cw_out               If the device is "pulse" and PULSE_SINK is
  *                                   unset or empty, it defaults to "cw_out"
  *                                   (created by cw-mic-mix.sh). Set it
@@ -83,6 +84,10 @@ static int dah_code = KEY_RIGHTCTRL;
 static int do_grab = 1;
 static int do_decode = 0;
 static int do_mode_b = 1;   /* Curtis 8044 mode B is the default */
+
+/* Paddle debounce hold time; 0 disables debouncing. */
+static unsigned int debounce_ms = 5;
+static int64_t debounce_ns = 5000000LL;
 
 static unsigned int alsa_latency_us = 20000;
 
@@ -314,6 +319,7 @@ static void usage(const char *prog)
         "  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
         "  CW_ALSA_LATENCY_US=20000   Requested ALSA latency in us\n"
         "  CW_KEYER_MODE=b            Curtis iambic mode, a or b\n"
+        "  CW_KEYER_DEBOUNCE_MS=5     Paddle debounce hold time, 0..50 ms\n"
         "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
         "                             unset, it defaults to cw_out (created by\n"
         "                             cw-mic-mix.sh)\n",
@@ -543,6 +549,17 @@ typedef enum {
     KY_AFTER_DASH
 } keyer_state_t;
 
+/*
+ * Contact debouncing. A lever transition is accepted only after the new
+ * level has been stable for the hold time; anything shorter is treated as
+ * contact bounce, the same job the 8044's RC input filter does.
+ */
+typedef struct {
+    int stable;
+    int candidate;
+    int64_t candidate_ns;
+} debounce_t;
+
 typedef struct {
     keyer_state_t state;
     int mode_b;
@@ -559,6 +576,10 @@ typedef struct {
     /* Mode A edge memories. */
     int dot_mem;
     int dash_mem;
+
+    /* Input debouncing. */
+    debounce_t dit_debounce;
+    debounce_t dah_debounce;
 } keyer_t;
 
 /* 1 = dit, 0 = dah, -1 = not currently sending a mark. */
@@ -693,8 +714,52 @@ static void keyer_core_paddles(keyer_t *keyer, int dot_down, int dash_down)
 }
 
 /*
- * Read the live paddle state plus any latched edges, and feed it to the
- * keyer core.
+ * Accept a lever transition only once the new level has been stable for the
+ * hold time. Hold 0 disables debouncing.
+ */
+static int debounce_update(debounce_t *d, int raw, int64_t now, int64_t hold_ns)
+{
+    raw = !!raw;
+
+    if (raw == d->stable) {
+        d->candidate = raw;
+        d->candidate_ns = now;
+        return d->stable;
+    }
+
+    if (hold_ns <= 0) {
+        d->stable = raw;
+        d->candidate = raw;
+        d->candidate_ns = now;
+        return d->stable;
+    }
+
+    if (raw != d->candidate) {
+        d->candidate = raw;
+        d->candidate_ns = now;
+    } else if (now - d->candidate_ns >= hold_ns) {
+        d->stable = raw;
+    }
+
+    return d->stable;
+}
+
+/*
+ * Feed one debounced sample to the keyer core. Debouncing happens here, in
+ * the keyer's own time base, so a bounce shorter than the hold time never
+ * reaches the core.
+ */
+static void keyer_sample(keyer_t *keyer, int dit_raw, int dah_raw, int64_t now)
+{
+    int dit = debounce_update(&keyer->dit_debounce, dit_raw, now, debounce_ns);
+    int dah = debounce_update(&keyer->dah_debounce, dah_raw, now, debounce_ns);
+
+    keyer_core_paddles(keyer, dit, dah);
+}
+
+/*
+ * Read the live paddle state plus any latched edges, debounce it, and feed
+ * it to the keyer core.
  */
 static void sample_keyer_paddles(keyer_t *keyer)
 {
@@ -703,9 +768,10 @@ static void sample_keyer_paddles(keyer_t *keyer)
     int dah_latched = atomic_exchange_explicit(&dah_edge, 0,
                                                memory_order_relaxed);
 
-    keyer_core_paddles(keyer,
-                       ALOAD(dit_paddle) || dit_latched,
-                       ALOAD(dah_paddle) || dah_latched);
+    keyer_sample(keyer,
+                 ALOAD(dit_paddle) || dit_latched,
+                 ALOAD(dah_paddle) || dah_latched,
+                 mono_ns());
 }
 
 /*
@@ -1526,6 +1592,8 @@ int main(int argc, char **argv)
                                      20000,
                                      1000,
                                      100000);
+    debounce_ms = parse_uint_env("CW_KEYER_DEBOUNCE_MS", 5, 0, 50);
+    debounce_ns = (int64_t)debounce_ms * 1000000LL;
     parse_mode_env();
 
     if (install_signal_handlers() < 0)
@@ -1540,13 +1608,14 @@ int main(int argc, char **argv)
 
     fprintf(stderr,
             "CW keyer: %.2f WPM, %.2f Hz, dit code %d, dah code %d, %s, "
-            "Curtis mode %c%s\n",
+            "Curtis mode %c, debounce %u ms%s\n",
             wpm,
             freq_hz,
             dit_code,
             dah_code,
             do_grab ? "EVIOCGRAB enabled" : "nograb",
             do_mode_b ? 'B' : 'A',
+            debounce_ms,
             do_decode ? ", decode" : "");
 
     pcm = open_audio(&actual_rate);
