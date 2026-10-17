@@ -3,19 +3,30 @@
 Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand adapter working as an iambic keyer in software.
 ## Design description
 - Reads evdev (/dev/input/eventX) input from adapter or alternatively keyboard input
-- Runs a Curtis 8044 iambic keyer, mode A or B, with dot/dash paddle memory
+- Runs a Curtis 8044 iambic keyer, selectable mode A or B, with dot/dash paddle memory
 - Renders each mark and its raised-cosine attack/release at PCM sample boundaries; late input/audio scheduling may still lengthen gaps
 - Sends the sine wave to ALSA's `pulse` device by default, with `PULSE_SINK=cw_out` for the mic-mixing setup
 
 ### Keying and audio timing
 
-The evdev thread tracks paddle state, including short presses and recovery from dropped input events. The keyer thread runs a state machine that mirrors the Curtis 8044 iambic graph (the same graph UnixCW's libcw uses), and watches the paddles through each mark and its following one-dit space, using monotonic deadlines for the nominal 1:3 dit/dah timing. With `decode` off, it does no Morse decoding or terminal output.
+The evdev thread tracks paddle state, including short presses and recovery from dropped input events. The keyer thread runs a small state machine and watches the paddles through each mark and its following one-dit space, using monotonic deadlines for the nominal 1:3 dit/dah timing. With `decode` off, it does no Morse decoding or terminal output.
 
-The default is **mode B**, which is what "Curtis" usually means and what the 8044 does when squeezed: if both paddles are closed together, the keyer finishes the current element and then sends one extra opposite element. For example, a quick squeeze keys dot-dash-dot. Set `CW_KEYER_MODE=a` for mode A, which stops after dot-dash instead. The pump mechanism (held paddles repeat, a squeeze alternates) is identical in both modes.
+Both original Curtis keyer behaviours are implemented; `CW_KEYER_MODE` selects one:
+
+- **Mode B** (default; the Accu-keyer logic that the 8044ABM labelled "B"): the dot and dash memories are set whenever their paddle closes and cleared at the end of that element if the paddle is open. Because the memories drive element selection, releasing a squeeze leaves the opposite memory set, so one extra element is keyed. Squeeze and release during the second dash and you get `-.-.` (C).
+- **Mode A** (the original Curtis/8044 logic): plain iambic selection from the paddle *levels*, plus a memory set only by a fresh press of the opposite paddle during an element. The same squeeze released during the second dash stops at `-.-` (K).
+
+In both modes a held paddle repeats its element and a held squeeze alternates, and a tap of the opposite paddle during an element is remembered (the "N"/"A" tests). Note that this is *not* the same as UnixCW's libcw keyer: libcw's default is effectively type B, but it labels it mode A and its `curtis_mode_b` option adds a spurious extra element.
 
 For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate ALSA actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range. The audio renderer enforces at least a one-dit silent gap; late delivery cannot shorten a mark, but scheduling delays or ALSA underruns can make a gap longer. ALSA buffering also adds audible latency, which is separate from the generated mark length.
 
-The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements. `make test` checks the iambic graph (including the mode A/mode B squeeze difference, held-paddle repeats, and alternating squeezes), decoding, sample-level envelope/spacing across PCM buffer boundaries, late marks, and the high-speed ramp; it does not test the evdev device or your audio routing. A live paddle/listening check is still useful after changing timing or ALSA settings.
+The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements. `make test` checks the iambic core (the N and A memory tests, the mode A/mode B `K`/`C` difference, held-paddle repeats, and alternating squeezes), decoding, sample-level envelope/spacing across PCM buffer boundaries, late marks, and the high-speed ramp; it does not test the evdev device or your audio routing. A live paddle/listening check is still useful after changing timing or ALSA settings.
+
+## License
+
+GPL-3.0-or-later; see `LICENSE`.
+
+Mode behaviour follows the primary sources: the Curtis Electro Devices *8044 Series Keyer-on-a-Chip Application Note* and Karl Fischer (DJ5IL), *All About Squeeze-Keying*. The latter distinguishes the true type A edge-memory rule from the Accu-keyer type B latch rule in detail; only the Accu-keyer/type B behaviour is verified here against a second implementation (UnixCW libcw), which matches on 200k random paddle schedules.
 
 ## Build
 ```

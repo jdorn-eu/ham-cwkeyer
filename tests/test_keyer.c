@@ -24,137 +24,157 @@ static void render_blocked(int16_t *samples, size_t frames,
     }
 }
 
-static int expect_symbol(keyer_t *keyer, int expected)
-{
-    int got = keyer_symbol(keyer);
+typedef struct {
+    char seq[32];
+    size_t len;
+} seq_t;
 
-    if (got == expected)
+static void emit(seq_t *s, const keyer_t *keyer)
+{
+    int sym = keyer_symbol(keyer);
+
+    if (sym >= 0 && s->len + 1 < sizeof(s->seq))
+        s->seq[s->len++] = sym ? '.' : '-';
+    s->seq[s->len] = '\0';
+}
+
+/* Clock one mark plus its inter-element space. */
+static void advance(keyer_t *keyer)
+{
+    keyer_core_step(keyer);
+    keyer_core_step(keyer);
+}
+
+static int expect_seq(const char *name, const seq_t *got, const char *want)
+{
+    if (strcmp(got->seq, want) == 0)
         return 0;
 
-    fprintf(stderr, "iambic: expected %c, got %c\n",
-            expected ? '.' : '-', got < 0 ? ' ' : (got ? '.' : '-'));
+    fprintf(stderr, "iambic %s: expected %s, got %s\n", name, want, got->seq);
     return 1;
 }
 
-/* Advance the graph through one mark and its inter-element space. */
-static void keyer_play(keyer_t *keyer)
-{
-    keyer_core_step(keyer);
-    keyer_core_step(keyer);
-}
-
 /*
- * Curtis 8044 behavior, cross-checked against UnixCW's libcw state graph.
- * The decisive case is mode B's trailing element after a simultaneous
- * squeeze: a quick squeeze must key dot-dash-dot, where mode A keys only
- * dot-dash.
+ * Reference behaviour from the Curtis 8044 application note and DJ5IL's
+ * "All About Squeeze-Keying":
+ *
+ *   N: tap dash then dot and release during the dash gives "-." in both
+ *      modes (dash memory).
+ *   K/C: squeeze and release during the second dash. Type A completes the
+ *      dash -> "-." + dash = "-.-" (K). Type B also emits the pending
+ *      opposite dot -> "-.-." (C).
  */
 static int run_iambic_tests(void)
 {
     int failures = 0;
-    keyer_t k;
 
-    /* A lone dit and a lone dah stop after one element. */
-    memset(&k, 0, sizeof(k));
-    k.mode_b = 1;
-    keyer_core_paddles(&k, 1, 0);
-    failures += expect_symbol(&k, 1);
-    keyer_core_paddles(&k, 0, 0);
-    keyer_play(&k);
-    if (k.state != KS_IDLE) {
-        fprintf(stderr, "iambic: lone dit did not stop\n");
-        failures++;
-    }
+    for (int mode = 0; mode <= 1; mode++) {
+        keyer_t k;
+        seq_t s;
 
-    memset(&k, 0, sizeof(k));
-    k.mode_b = 1;
-    keyer_core_paddles(&k, 0, 1);
-    failures += expect_symbol(&k, 0);
-    keyer_core_paddles(&k, 0, 0);
-    keyer_play(&k);
-    if (k.state != KS_IDLE) {
-        fprintf(stderr, "iambic: lone dah did not stop\n");
-        failures++;
-    }
+        /* Lone dit and lone dah stop after one element. */
+        memset(&k, 0, sizeof(k));
+        k.mode_b = mode;
+        s = (seq_t){0};
+        keyer_core_paddles(&k, 1, 0);
+        emit(&s, &k);
+        keyer_core_paddles(&k, 0, 0);
+        advance(&k);
+        if (k.state != KY_IDLE) {
+            fprintf(stderr, "iambic: lone dit did not stop\n");
+            failures++;
+        }
+        failures += expect_seq("lone dit", &s, ".");
 
-    /* Mode B squeeze released during the first element: . - . */
-    memset(&k, 0, sizeof(k));
-    k.mode_b = 1;
-    keyer_core_paddles(&k, 1, 1);
-    failures += expect_symbol(&k, 1);
-    keyer_core_paddles(&k, 0, 0);
-    keyer_core_step(&k);
-    keyer_core_step(&k);
-    failures += expect_symbol(&k, 0);
-    keyer_core_step(&k);
-    keyer_core_step(&k);
-    failures += expect_symbol(&k, 1);
-    keyer_core_step(&k);
-    keyer_core_step(&k);
-    if (k.state != KS_IDLE) {
-        fprintf(stderr, "iambic: mode B squeeze did not stop\n");
-        failures++;
-    }
+        memset(&k, 0, sizeof(k));
+        k.mode_b = mode;
+        s = (seq_t){0};
+        keyer_core_paddles(&k, 0, 1);
+        emit(&s, &k);
+        keyer_core_paddles(&k, 0, 0);
+        advance(&k);
+        if (k.state != KY_IDLE) {
+            fprintf(stderr, "iambic: lone dah did not stop\n");
+            failures++;
+        }
+        failures += expect_seq("lone dah", &s, "-");
 
-    /* The same squeeze released during the dash also gives . - . */
-    memset(&k, 0, sizeof(k));
-    k.mode_b = 1;
-    keyer_core_paddles(&k, 1, 1);
-    failures += expect_symbol(&k, 1);
-    keyer_core_step(&k);
-    keyer_core_step(&k);
-    failures += expect_symbol(&k, 0);
-    keyer_core_paddles(&k, 0, 0);
-    keyer_core_step(&k);
-    keyer_core_step(&k);
-    failures += expect_symbol(&k, 1);
-    keyer_core_step(&k);
-    keyer_core_step(&k);
-    if (k.state != KS_IDLE) {
-        fprintf(stderr, "iambic: late mode B squeeze did not stop\n");
-        failures++;
-    }
+        /* N: dash, then dot, released during the dash. */
+        memset(&k, 0, sizeof(k));
+        k.mode_b = mode;
+        s = (seq_t){0};
+        keyer_core_paddles(&k, 0, 1);
+        emit(&s, &k);
+        keyer_core_paddles(&k, 1, 1);
+        keyer_core_paddles(&k, 0, 0);
+        advance(&k);
+        emit(&s, &k);
+        advance(&k);
+        emit(&s, &k);
+        failures += expect_seq("N", &s, "-.");
 
-    /* Mode A squeeze stops after . - with no trailing element. */
-    memset(&k, 0, sizeof(k));
-    k.mode_b = 0;
-    keyer_core_paddles(&k, 1, 1);
-    failures += expect_symbol(&k, 1);
-    keyer_core_paddles(&k, 0, 0);
-    keyer_core_step(&k);
-    keyer_core_step(&k);
-    failures += expect_symbol(&k, 0);
-    keyer_core_step(&k);
-    keyer_core_step(&k);
-    if (k.state != KS_IDLE) {
-        fprintf(stderr, "iambic: mode A squeeze must stop after .-\n");
-        failures++;
-    }
+        /* A: dot, then dash, released during the dot. */
+        memset(&k, 0, sizeof(k));
+        k.mode_b = mode;
+        s = (seq_t){0};
+        keyer_core_paddles(&k, 1, 0);
+        emit(&s, &k);
+        keyer_core_paddles(&k, 1, 1);
+        keyer_core_paddles(&k, 0, 0);
+        advance(&k);
+        emit(&s, &k);
+        advance(&k);
+        emit(&s, &k);
+        failures += expect_seq("A", &s, ".-");
 
-    /* Holding a squeeze alternates and does not repeat the mode B element. */
-    memset(&k, 0, sizeof(k));
-    k.mode_b = 1;
-    keyer_core_paddles(&k, 1, 1);
-    for (int i = 0; i < 8; i++) {
-        failures += expect_symbol(&k, i % 2 == 0 ? 1 : 0);
-        keyer_play(&k);
-    }
+        /* K/C: squeeze, release during the second dash. */
+        memset(&k, 0, sizeof(k));
+        k.mode_b = mode;
+        s = (seq_t){0};
+        keyer_core_paddles(&k, 0, 1);
+        emit(&s, &k);
+        keyer_core_paddles(&k, 1, 1);
+        advance(&k);
+        emit(&s, &k);
+        advance(&k);
+        emit(&s, &k);
+        keyer_core_paddles(&k, 0, 0);
+        advance(&k);
+        emit(&s, &k);
+        advance(&k);
+        emit(&s, &k);
+        failures += expect_seq("K/C", &s, mode ? "-.-." : "-.-");
 
-    /* Holding one paddle repeats that element. */
-    memset(&k, 0, sizeof(k));
-    k.mode_b = 1;
-    keyer_core_paddles(&k, 1, 0);
-    for (int i = 0; i < 4; i++) {
-        failures += expect_symbol(&k, 1);
-        keyer_play(&k);
-    }
+        /* Held levers repeat; a held squeeze alternates. */
+        memset(&k, 0, sizeof(k));
+        k.mode_b = mode;
+        s = (seq_t){0};
+        keyer_core_paddles(&k, 1, 0);
+        for (int i = 0; i < 4; i++) {
+            emit(&s, &k);
+            advance(&k);
+        }
+        failures += expect_seq("hold dit", &s, "....");
 
-    memset(&k, 0, sizeof(k));
-    k.mode_b = 1;
-    keyer_core_paddles(&k, 0, 1);
-    for (int i = 0; i < 4; i++) {
-        failures += expect_symbol(&k, 0);
-        keyer_play(&k);
+        memset(&k, 0, sizeof(k));
+        k.mode_b = mode;
+        s = (seq_t){0};
+        keyer_core_paddles(&k, 0, 1);
+        for (int i = 0; i < 4; i++) {
+            emit(&s, &k);
+            advance(&k);
+        }
+        failures += expect_seq("hold dah", &s, "----");
+
+        memset(&k, 0, sizeof(k));
+        k.mode_b = mode;
+        s = (seq_t){0};
+        keyer_core_paddles(&k, 1, 1);
+        for (int i = 0; i < 6; i++) {
+            emit(&s, &k);
+            advance(&k);
+        }
+        failures += expect_seq("squeeze alternates", &s, ".-.-.-");
     }
 
     return failures;

@@ -513,160 +513,181 @@ static void sleep_ns(int64_t ns)
 }
 
 /*
- * Curtis 8044 iambic keyer state machine.
+ * Curtis 8044 iambic keyer core.
  *
- * This is a direct port of the state graph used by UnixCW's libcw, which
- * documents itself as emulating the Curtis 8044, so that keying follows the
- * same rules as a transceiver built around the real chip. The graph tracks
- * "A" and "B" states because Curtis mode B sends one trailing element after
- * a simultaneous squeeze:
+ * Two behaviours are implemented, matching the original keyers that the
+ * 8044ABM selected between:
  *
- *   - the dot and dash latches are set while their paddle is closed and are
- *     cleared at the end of that element's space if the paddle is open;
- *   - the mode B Curtis latch is set on the leading edge of a simultaneous
- *     squeeze and, once consumed, forces one extra opposite element.
+ *   Mode B (the Accu-keyer / 8044ABM "B"): the dot and dash latches are set
+ *   whenever their lever is closed and cleared at the end of that element if
+ *   the lever is open. Only the latches select elements, so releasing a
+ *   squeeze leaves the opposite latch set and one extra element goes out.
+ *   This is what most transceivers mean by "Curtis mode B".
+ *
+ *   Mode A (the original Curtis / 8044 "A"): plain iambic selection from
+ *   the lever levels, plus an edge-triggered memory: a fresh press of the
+ *   opposite lever during an element injects one extra opposite element even
+ *   if the lever is released before the element ends.
  *
  * keyer_core_step() is called once at the end of every mark and once at the
- * end of every inter-element space, matching how libcw clocks its graph from
- * the generator.
+ * end of every inter-element space.
+ *
+ * References: Curtis Electro Devices, "8044 Series Keyer-on-a-Chip
+ * Application Note"; K. Fischer, DJ5IL, "All About Squeeze-Keying".
  */
 typedef enum {
-    KS_IDLE,
-    KS_IN_DOT_A,
-    KS_IN_DASH_A,
-    KS_AFTER_DOT_A,
-    KS_AFTER_DASH_A,
-    KS_IN_DOT_B,
-    KS_IN_DASH_B,
-    KS_AFTER_DOT_B,
-    KS_AFTER_DASH_B
+    KY_IDLE,
+    KY_IN_DOT,
+    KY_IN_DASH,
+    KY_AFTER_DOT,
+    KY_AFTER_DASH
 } keyer_state_t;
 
 typedef struct {
     keyer_state_t state;
+    int mode_b;
+
     int dot_paddle;
     int dash_paddle;
+    int prev_dot;
+    int prev_dash;
+
+    /* Mode B level latches. */
     int dot_latch;
     int dash_latch;
-    int curtis_b_latch;
-    int both_closed;
-    int mode_b;
+
+    /* Mode A edge memories. */
+    int dot_mem;
+    int dash_mem;
 } keyer_t;
 
 /* 1 = dit, 0 = dah, -1 = not currently sending a mark. */
 static int keyer_symbol(const keyer_t *keyer)
 {
-    if (keyer->state == KS_IN_DOT_A || keyer->state == KS_IN_DOT_B)
+    if (keyer->state == KY_IN_DOT)
         return 1;
 
-    if (keyer->state == KS_IN_DASH_A || keyer->state == KS_IN_DASH_B)
+    if (keyer->state == KY_IN_DASH)
         return 0;
 
     return -1;
 }
 
+static int keyer_in_dot_element(const keyer_t *keyer)
+{
+    return keyer->state == KY_IN_DOT || keyer->state == KY_AFTER_DOT;
+}
+
+static int keyer_in_dash_element(const keyer_t *keyer)
+{
+    return keyer->state == KY_IN_DASH || keyer->state == KY_AFTER_DASH;
+}
+
+/*
+ * Advance the graph: end of a mark moves IN_* to the matching AFTER_*;
+ * end of an inter-element space selects the next element (or idle).
+ */
 static void keyer_core_step(keyer_t *keyer)
 {
-    switch (keyer->state) {
-    case KS_IN_DOT_A:
-        keyer->state = KS_AFTER_DOT_A;
-        break;
+    if (keyer->state == KY_IN_DOT) {
+        keyer->state = KY_AFTER_DOT;
+        return;
+    }
 
-    case KS_IN_DOT_B:
-        keyer->state = KS_AFTER_DOT_B;
-        break;
+    if (keyer->state == KY_IN_DASH) {
+        keyer->state = KY_AFTER_DASH;
+        return;
+    }
 
-    case KS_IN_DASH_A:
-        keyer->state = KS_AFTER_DASH_A;
-        break;
+    if (keyer->state == KY_AFTER_DOT) {
+        if (keyer->mode_b) {
+            if (!keyer->dot_paddle)
+                keyer->dot_latch = 0;
 
-    case KS_IN_DASH_B:
-        keyer->state = KS_AFTER_DASH_B;
-        break;
-
-    case KS_AFTER_DOT_A:
-    case KS_AFTER_DOT_B:
-        if (!keyer->dot_paddle)
-            keyer->dot_latch = 0;
-
-        if (keyer->state == KS_AFTER_DOT_B) {
-            /* Mode B: the trailing element after a squeeze is a dash. */
-            keyer->state = KS_IN_DASH_A;
-        } else if (keyer->dash_latch) {
-            if (keyer->curtis_b_latch) {
-                keyer->curtis_b_latch = 0;
-                keyer->state = KS_IN_DASH_B;
-            } else {
-                keyer->state = KS_IN_DASH_A;
-            }
-        } else if (keyer->dot_latch) {
-            keyer->state = KS_IN_DOT_A;
+            if (keyer->dash_latch)
+                keyer->state = KY_IN_DASH;
+            else if (keyer->dot_latch)
+                keyer->state = KY_IN_DOT;
+            else
+                keyer->state = KY_IDLE;
         } else {
-            keyer->state = KS_IDLE;
+            /* The dot element that just finished consumes the dot memory. */
+            keyer->dot_mem = 0;
+
+            if (keyer->dash_paddle || keyer->dash_mem)
+                keyer->state = KY_IN_DASH;
+            else if (keyer->dot_paddle)
+                keyer->state = KY_IN_DOT;
+            else
+                keyer->state = KY_IDLE;
         }
-        break;
+        return;
+    }
 
-    case KS_AFTER_DASH_A:
-    case KS_AFTER_DASH_B:
-        if (!keyer->dash_paddle)
-            keyer->dash_latch = 0;
+    if (keyer->state == KY_AFTER_DASH) {
+        if (keyer->mode_b) {
+            if (!keyer->dash_paddle)
+                keyer->dash_latch = 0;
 
-        if (keyer->state == KS_AFTER_DASH_B) {
-            /* Mode B: the trailing element after a squeeze is a dot. */
-            keyer->state = KS_IN_DOT_A;
-        } else if (keyer->dot_latch) {
-            if (keyer->curtis_b_latch) {
-                keyer->curtis_b_latch = 0;
-                keyer->state = KS_IN_DOT_B;
-            } else {
-                keyer->state = KS_IN_DOT_A;
-            }
-        } else if (keyer->dash_latch) {
-            keyer->state = KS_IN_DASH_A;
+            if (keyer->dot_latch)
+                keyer->state = KY_IN_DOT;
+            else if (keyer->dash_latch)
+                keyer->state = KY_IN_DASH;
+            else
+                keyer->state = KY_IDLE;
         } else {
-            keyer->state = KS_IDLE;
-        }
-        break;
+            keyer->dash_mem = 0;
 
-    case KS_IDLE:
-    default:
-        break;
+            if (keyer->dot_paddle || keyer->dot_mem)
+                keyer->state = KY_IN_DOT;
+            else if (keyer->dash_paddle)
+                keyer->state = KY_IN_DASH;
+            else
+                keyer->state = KY_IDLE;
+        }
+        return;
     }
 }
 
 /*
- * Record the current paddle values. The dot/dash latches are level-based,
- * but the mode B Curtis latch is edge-triggered so that merely holding a
- * squeeze does not keep queueing trailing elements.
+ * Record the current paddle values. Mode B sets its level latches; mode A
+ * remembers a fresh press of the opposite lever that lands while an element
+ * is being generated.
  */
 static void keyer_core_paddles(keyer_t *keyer, int dot_down, int dash_down)
 {
     dot_down = !!dot_down;
     dash_down = !!dash_down;
 
+    if (!keyer->mode_b) {
+        if (dot_down && !keyer->prev_dot && keyer_in_dash_element(keyer))
+            keyer->dot_mem = 1;
+        if (dash_down && !keyer->prev_dash && keyer_in_dot_element(keyer))
+            keyer->dash_mem = 1;
+    }
+    keyer->prev_dot = dot_down;
+    keyer->prev_dash = dash_down;
+
     keyer->dot_paddle = dot_down;
     keyer->dash_paddle = dash_down;
 
-    if (dot_down)
-        keyer->dot_latch = 1;
-    if (dash_down)
-        keyer->dash_latch = 1;
+    if (keyer->mode_b) {
+        if (dot_down)
+            keyer->dot_latch = 1;
+        if (dash_down)
+            keyer->dash_latch = 1;
+    }
 
-    if (keyer->mode_b && dot_down && dash_down && !keyer->both_closed)
-        keyer->curtis_b_latch = 1;
-    keyer->both_closed = dot_down && dash_down;
-
-    if (keyer->state == KS_IDLE && (dot_down || dash_down)) {
+    if (keyer->state == KY_IDLE && (dot_down || dash_down)) {
         /*
          * Nudge the machine out of idle. Pretend we are at the end of the
-         * opposite space, then step once, matching libcw's initial nudge.
+         * opposite element's space so the step picks the right first
+         * element (dot wins if both levers arrive in the same sample).
          */
         if (dot_down)
-            keyer->state = keyer->curtis_b_latch ? KS_AFTER_DASH_B
-                                                 : KS_AFTER_DASH_A;
+            keyer->state = KY_AFTER_DASH;
         else
-            keyer->state = keyer->curtis_b_latch ? KS_AFTER_DOT_B
-                                                 : KS_AFTER_DOT_A;
+            keyer->state = KY_AFTER_DOT;
         keyer_core_step(keyer);
     }
 }
@@ -1068,7 +1089,7 @@ static void *keyer_thread(void *arg)
 
     keyer_t keyer = {0};
     keyer.mode_b = do_mode_b;
-    keyer.state = KS_IDLE;
+    keyer.state = KY_IDLE;
 
     char sym[16];
     size_t sym_len = 0;
@@ -1077,11 +1098,11 @@ static void *keyer_thread(void *arg)
     int space_emitted = 0;    /* space already printed for this idle gap */
 
     while (keep_running()) {
-        if (keyer.state == KS_IDLE) {
+        if (keyer.state == KY_IDLE) {
             /* A press here nudges the graph into its first element. */
             sample_keyer_paddles(&keyer);
 
-            if (keyer.state == KS_IDLE) {
+            if (keyer.state == KY_IDLE) {
                 /*
                  * Idle: the symbol being keyed is complete. If the decode
                  * display is active, print it.
