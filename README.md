@@ -45,7 +45,9 @@ First check for the correct device: `sudo libinput list-devices` or `sudo evtest
 ```
 The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). Running `./cwkeyer` with no arguments or `./cwkeyer --help` lists the known key names; raw evdev key codes work too.
 
-While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty); the previous terminal state is restored on exit. With `decode`, each keyed symbol is printed as text as you key, without newlines; unknown symbols are ignored. Pausing for more than seven dits between characters (the ITU word gap) prints a single space, so word breaks you key by hand appear as spaces.
+While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty). Ctrl+C, SIGTERM, SIGHUP, and SIGQUIT stop it cleanly and restore the terminal and the evdev grab. Ctrl+Z suspends it properly: the terminal and grab are released before stopping and re-established on resume, so the shell stays usable while it is suspended. Fatal crashes also restore the terminal on a best-effort basis before re-raising the signal.
+
+With `decode`, each keyed symbol is printed as text as you key, without newlines; unknown symbols are ignored. Pausing for more than seven dits between characters (the ITU word gap) prints a single space, so word breaks you key by hand appear as spaces. Decoder output is written synchronously by the keyer thread, so a blocked stdout consumer can delay paddle processing; keep the output destination draining when using `decode`.
 
 ## Environment
 - `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`.

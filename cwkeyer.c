@@ -107,11 +107,17 @@ static atomic_int fatal_error = 0;
 
 static volatile sig_atomic_t stop_requested = 0;
 
-static void handle_signal(int sig)
-{
-    (void)sig;
-    stop_requested = 1;
-}
+/*
+ * The evdev thread owns this descriptor, but the SIGTSTP/SIGCONT handlers must
+ * be able to drop and restore an exclusive EVIOCGRAB around a stop. -1 means
+ * no device is currently open.
+ */
+static volatile sig_atomic_t evdev_fd = -1;
+static volatile sig_atomic_t evdev_grabbed = 0;
+
+/* Defined with the terminal code below; the signal handlers call them. */
+static void disable_terminal_echo(void);
+static void restore_terminal(void);
 
 static int keep_running(void)
 {
@@ -129,29 +135,140 @@ static void request_stop(int fatal)
     ASTORE(running, 0);
 }
 
-static int install_signal_handlers(void)
+/*
+ * The signal handlers below do the minimum work that cannot be deferred:
+ * kill() is async-signal-safe, and tcsetattr()/ioctl() are single syscalls.
+ * They deliberately avoid stdio, malloc, and anything that can take a lock.
+ */
+static void release_evdev_grab(void)
+{
+    int fd = (int)evdev_fd;
+
+    if (fd >= 0 && evdev_grabbed) {
+        ioctl(fd, EVIOCGRAB, 0);
+        evdev_grabbed = 0;
+    }
+}
+
+static void acquire_evdev_grab(void)
+{
+    int fd = (int)evdev_fd;
+
+    if (do_grab && fd >= 0 && !evdev_grabbed) {
+        if (ioctl(fd, EVIOCGRAB, 1) == 0)
+            evdev_grabbed = 1;
+    }
+}
+
+/* SIGINT, SIGTERM, SIGHUP, SIGQUIT: ask the loops to wind down. */
+static void handle_stop_signal(int sig)
+{
+    (void)sig;
+    stop_requested = 1;
+}
+
+/*
+ * Ctrl+Z. Put the terminal and the input device back how the rest of the
+ * session expects them, then really stop. SIGSTOP is used rather than
+ * re-raising SIGTSTP because the latter is blocked while its own handler
+ * runs; SIGSTOP is uncatchable and unblockable, so it takes effect at once.
+ * On resume the kernel delivers SIGCONT, whose handler re-establishes our
+ * terminal mode and grab (see handle_cont).
+ */
+static void handle_tstp(int sig)
+{
+    (void)sig;
+
+    release_evdev_grab();
+    restore_terminal();
+
+    kill(getpid(), SIGSTOP);
+}
+
+/*
+ * SIGCONT arrives after SIGSTOP, including a SIGSTOP sent directly by another
+ * process (which bypasses the SIGTSTP handler entirely). Re-assert our
+ * terminal mode and grab so the keyer keeps working.
+ */
+static void handle_cont(int sig)
+{
+    (void)sig;
+
+    disable_terminal_echo();
+    acquire_evdev_grab();
+}
+
+/*
+ * Last-resort cleanup for fatal signals: leave the terminal usable, then die
+ * from the original signal so the exit status and any core dump are preserved.
+ */
+static void handle_fatal(int sig)
+{
+    struct sigaction dfl;
+    sigset_t mask;
+
+    release_evdev_grab();
+    restore_terminal();
+
+    memset(&dfl, 0, sizeof(dfl));
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    sigaction(sig, &dfl, NULL);
+
+    /* The signal was blocked while this handler ran; unblock it so the
+     * re-raise below actually terminates the process. */
+    sigemptyset(&mask);
+    sigaddset(&mask, sig);
+    pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
+
+    raise(sig);
+    _exit(128 + sig);
+}
+
+static int set_signal_handler(int sig, void (*handler)(int))
 {
     struct sigaction sa;
 
     memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = handle_signal;
+    sa.sa_handler = handler;
     sigemptyset(&sa.sa_mask);
 
     /*
-     * Deliberately no SA_RESTART: blocking poll()/ALSA calls should wake up
-     * promptly on Ctrl+C.
+     * Deliberately no SA_RESTART: blocking poll()/ALSA/nanosleep calls should
+     * return EINTR so shutdown and suspend are immediate.
      */
     sa.sa_flags = 0;
 
-    if (sigaction(SIGINT, &sa, NULL) < 0) {
-        fprintf(stderr, "sigaction(SIGINT): %s\n", strerror(errno));
+    if (sigaction(sig, &sa, NULL) < 0) {
+        fprintf(stderr, "sigaction(%d): %s\n", sig, strerror(errno));
         return -1;
     }
 
-    if (sigaction(SIGTERM, &sa, NULL) < 0) {
-        fprintf(stderr, "sigaction(SIGTERM): %s\n", strerror(errno));
+    return 0;
+}
+
+static int install_signal_handlers(void)
+{
+    if (set_signal_handler(SIGINT, handle_stop_signal) < 0 ||
+        set_signal_handler(SIGTERM, handle_stop_signal) < 0 ||
+        set_signal_handler(SIGHUP, handle_stop_signal) < 0 ||
+        set_signal_handler(SIGQUIT, handle_stop_signal) < 0 ||
+        set_signal_handler(SIGTSTP, handle_tstp) < 0 ||
+        set_signal_handler(SIGCONT, handle_cont) < 0 ||
+        set_signal_handler(SIGSEGV, handle_fatal) < 0 ||
+        set_signal_handler(SIGBUS, handle_fatal) < 0 ||
+        set_signal_handler(SIGFPE, handle_fatal) < 0 ||
+        set_signal_handler(SIGILL, handle_fatal) < 0 ||
+        set_signal_handler(SIGABRT, handle_fatal) < 0)
         return -1;
-    }
+
+    /*
+     * The decoder writes to stdout. If its consumer goes away, writes should
+     * fail with EPIPE rather than kill the whole keyer and skip the clean
+     * shutdown path. Ignore SIGPIPE and let write errors surface instead.
+     */
+    if (set_signal_handler(SIGPIPE, SIG_IGN) < 0)
+        return -1;
 
     return 0;
 }
@@ -502,12 +619,16 @@ static void *evdev_thread(void *arg)
         return NULL;
     }
 
+    evdev_fd = fd;
+
     warn_if_key_not_supported(fd, dit_code, "dit");
     warn_if_key_not_supported(fd, dah_code, "dah");
     initialize_paddle_state_from_device(fd);
 
     if (do_grab) {
-        if (ioctl(fd, EVIOCGRAB, 1) < 0) {
+        if (ioctl(fd, EVIOCGRAB, 1) == 0) {
+            evdev_grabbed = 1;
+        } else {
             fprintf(stderr,
                     "warning: EVIOCGRAB failed: %s; events may leak to desktop\n",
                     strerror(errno));
@@ -613,13 +734,8 @@ static void *evdev_thread(void *arg)
 out:
     clear_input_state();
 
-    if (do_grab) {
-        if (ioctl(fd, EVIOCGRAB, 0) < 0) {
-            fprintf(stderr,
-                    "warning: EVIOCGRAB release failed: %s\n",
-                    strerror(errno));
-        }
-    }
+    release_evdev_grab();
+    evdev_fd = -1;
 
     close(fd);
 
@@ -636,13 +752,14 @@ out:
  * Ctrl+C still works.
  */
 static struct termios saved_termios;
-static int termios_modified = 0;
+static volatile sig_atomic_t termios_modified = 0;
 
 static void disable_terminal_echo(void)
 {
     struct termios t;
 
-    if (!isatty(STDIN_FILENO))
+    /* Already disabled; re-saving here would store the disabled state. */
+    if (termios_modified || !isatty(STDIN_FILENO))
         return;
 
     if (tcgetattr(STDIN_FILENO, &t) < 0)
@@ -658,8 +775,11 @@ static void disable_terminal_echo(void)
 
 static void restore_terminal(void)
 {
-    if (termios_modified)
-        tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+    if (!termios_modified)
+        return;
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+    termios_modified = 0;
 }
 
 /*
@@ -1240,6 +1360,11 @@ int main(int argc, char **argv)
 
     if (install_signal_handlers() < 0)
         return 1;
+
+    /* Safety net for exit paths (and future ones) that skip the explicit
+     * restore below; it is a no-op when the terminal was never changed. */
+    if (atexit(restore_terminal) != 0)
+        fprintf(stderr, "warning: atexit(restore_terminal) failed\n");
 
     disable_terminal_echo();
 
