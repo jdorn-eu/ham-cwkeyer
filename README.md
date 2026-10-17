@@ -38,7 +38,9 @@ The build is deliberately strict by default: `-Werror` plus a broad warning set 
 
 A live paddle/listening check is still useful after changing timing, debouncing, or ALSA settings.
 
-CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict GCC build, `make test`, `make analyze`, and `shellcheck`; a clang build and test; and a sanitizer job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer.
+`make coverage` (requires `gcovr`) runs the C suites with `--coverage` and writes an HTML report to `coverage/index.html` plus a Cobertura `coverage/coverage.xml`. Coverage is reported for `cwkeyer.c` only; the untested ALSA/evdev/main paths keep it around 44%, so treat it as a map of what to test next rather than a target.
+
+CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict GCC build, `make test`, `make analyze`, and `shellcheck`; a clang build and test; a sanitizer job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer; and a coverage job that uploads the report as an artifact.
 
 ## License
 

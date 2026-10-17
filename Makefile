@@ -37,7 +37,7 @@ endif
 CPPFLAGS += -DCWKEYER_VERSION='"$(VERSION)"'
 LDLIBS    = -lasound -lpthread -lm
 
-.PHONY: test analyze install uninstall dist clean
+.PHONY: test analyze coverage install uninstall dist clean
 
 cwkeyer: cwkeyer.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -o $@ $< $(LDLIBS)
@@ -53,6 +53,20 @@ test:
 # GCC's static analyzer; slower than a normal build, so kept separate.
 analyze:
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fanalyzer -c cwkeyer.c -o /dev/null
+
+# Code coverage (needs gcovr). Writes coverage/index.html and coverage.xml.
+coverage:
+	@rm -rf coverage
+	@mkdir -p coverage
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) --coverage -O0 -g -c tests/test_keyer.c -o coverage/test_keyer.o
+	$(CC) --coverage -o coverage/test_keyer coverage/test_keyer.o $(LDLIBS)
+	./coverage/test_keyer
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) --coverage -O0 -g -c tests/test_signals.c -o coverage/test_signals.o
+	$(CC) --coverage -o coverage/test_signals coverage/test_signals.o $(LDLIBS)
+	./coverage/test_signals
+	gcovr --root . --filter 'cwkeyer\.c' --txt --cobertura coverage/coverage.xml \
+	    --html-details coverage/index.html
+	@echo "coverage report: coverage/index.html"
 
 install: cwkeyer
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(MANDIR)"
@@ -72,3 +86,4 @@ dist:
 
 clean:
 	rm -f cwkeyer
+	rm -rf coverage
