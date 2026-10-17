@@ -24,6 +24,7 @@
  * Environment:
  *   CW_ALSA_DEVICE=pulse            ALSA PCM to open. Default: "pulse".
  *   CW_ALSA_LATENCY_US=20000        Requested ALSA latency in microseconds.
+ *   CW_KEYER_MODE=b                 Curtis iambic mode "a" or "b".
  *   PULSE_SINK=cw_out               If the device is "pulse" and PULSE_SINK is
  *                                   unset or empty, it defaults to "cw_out"
  *                                   (created by cw-mic-mix.sh). Set it
@@ -80,6 +81,7 @@ static int dit_code = KEY_LEFTCTRL;
 static int dah_code = KEY_RIGHTCTRL;
 static int do_grab = 1;
 static int do_decode = 0;
+static int do_mode_b = 1;   /* Curtis 8044 mode B is the default */
 
 static unsigned int alsa_latency_us = 20000;
 
@@ -310,6 +312,7 @@ static void usage(const char *prog)
         "Environment:\n"
         "  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
         "  CW_ALSA_LATENCY_US=20000   Requested ALSA latency in us\n"
+        "  CW_KEYER_MODE=b            Curtis iambic mode, a or b\n"
         "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
         "                             unset, it defaults to cw_out (created by\n"
         "                             cw-mic-mix.sh)\n",
@@ -362,6 +365,30 @@ static unsigned int parse_uint_env(const char *name,
     }
 
     return (unsigned int)v;
+}
+
+/*
+ * CW_KEYER_MODE selects the Curtis iambic timing: "a" or "b" (default b).
+ */
+static void parse_mode_env(void)
+{
+    const char *s = getenv("CW_KEYER_MODE");
+
+    if (!s || !*s)
+        return;
+
+    if (strcasecmp(s, "a") == 0 ||
+        strcasecmp(s, "modea") == 0 ||
+        strcasecmp(s, "mode_a") == 0) {
+        do_mode_b = 0;
+    } else if (strcasecmp(s, "b") == 0 ||
+               strcasecmp(s, "modeb") == 0 ||
+               strcasecmp(s, "mode_b") == 0) {
+        do_mode_b = 1;
+    } else {
+        fprintf(stderr,
+                "warning: ignoring invalid CW_KEYER_MODE='%s'; use a or b\n", s);
+    }
 }
 
 /*
@@ -484,33 +511,192 @@ static void sleep_ns(int64_t ns)
     }
 }
 
-static void sample_paddles(int *dit_seen, int *dah_seen)
+/*
+ * Curtis 8044 iambic keyer state machine.
+ *
+ * This is a direct port of the state graph used by UnixCW's libcw, which
+ * documents itself as emulating the Curtis 8044, so that keying follows the
+ * same rules as a transceiver built around the real chip. The graph tracks
+ * "A" and "B" states because Curtis mode B sends one trailing element after
+ * a simultaneous squeeze:
+ *
+ *   - the dot and dash latches are set while their paddle is closed and are
+ *     cleared at the end of that element's space if the paddle is open;
+ *   - the mode B Curtis latch is set on the leading edge of a simultaneous
+ *     squeeze and, once consumed, forces one extra opposite element.
+ *
+ * keyer_core_step() is called once at the end of every mark and once at the
+ * end of every inter-element space, matching how libcw clocks its graph from
+ * the generator.
+ */
+typedef enum {
+    KS_IDLE,
+    KS_IN_DOT_A,
+    KS_IN_DASH_A,
+    KS_AFTER_DOT_A,
+    KS_AFTER_DASH_A,
+    KS_IN_DOT_B,
+    KS_IN_DASH_B,
+    KS_AFTER_DOT_B,
+    KS_AFTER_DASH_B
+} keyer_state_t;
+
+typedef struct {
+    keyer_state_t state;
+    int dot_paddle;
+    int dash_paddle;
+    int dot_latch;
+    int dash_latch;
+    int curtis_b_latch;
+    int both_closed;
+    int mode_b;
+} keyer_t;
+
+/* 1 = dit, 0 = dah, -1 = not currently sending a mark. */
+static int keyer_symbol(const keyer_t *keyer)
+{
+    if (keyer->state == KS_IN_DOT_A || keyer->state == KS_IN_DOT_B)
+        return 1;
+
+    if (keyer->state == KS_IN_DASH_A || keyer->state == KS_IN_DASH_B)
+        return 0;
+
+    return -1;
+}
+
+static void keyer_core_step(keyer_t *keyer)
+{
+    switch (keyer->state) {
+    case KS_IN_DOT_A:
+        keyer->state = KS_AFTER_DOT_A;
+        break;
+
+    case KS_IN_DOT_B:
+        keyer->state = KS_AFTER_DOT_B;
+        break;
+
+    case KS_IN_DASH_A:
+        keyer->state = KS_AFTER_DASH_A;
+        break;
+
+    case KS_IN_DASH_B:
+        keyer->state = KS_AFTER_DASH_B;
+        break;
+
+    case KS_AFTER_DOT_A:
+    case KS_AFTER_DOT_B:
+        if (!keyer->dot_paddle)
+            keyer->dot_latch = 0;
+
+        if (keyer->state == KS_AFTER_DOT_B) {
+            /* Mode B: the trailing element after a squeeze is a dash. */
+            keyer->state = KS_IN_DASH_A;
+        } else if (keyer->dash_latch) {
+            if (keyer->curtis_b_latch) {
+                keyer->curtis_b_latch = 0;
+                keyer->state = KS_IN_DASH_B;
+            } else {
+                keyer->state = KS_IN_DASH_A;
+            }
+        } else if (keyer->dot_latch) {
+            keyer->state = KS_IN_DOT_A;
+        } else {
+            keyer->state = KS_IDLE;
+        }
+        break;
+
+    case KS_AFTER_DASH_A:
+    case KS_AFTER_DASH_B:
+        if (!keyer->dash_paddle)
+            keyer->dash_latch = 0;
+
+        if (keyer->state == KS_AFTER_DASH_B) {
+            /* Mode B: the trailing element after a squeeze is a dot. */
+            keyer->state = KS_IN_DOT_A;
+        } else if (keyer->dot_latch) {
+            if (keyer->curtis_b_latch) {
+                keyer->curtis_b_latch = 0;
+                keyer->state = KS_IN_DOT_B;
+            } else {
+                keyer->state = KS_IN_DOT_A;
+            }
+        } else if (keyer->dash_latch) {
+            keyer->state = KS_IN_DASH_A;
+        } else {
+            keyer->state = KS_IDLE;
+        }
+        break;
+
+    case KS_IDLE:
+    default:
+        break;
+    }
+}
+
+/*
+ * Record the current paddle values. The dot/dash latches are level-based,
+ * but the mode B Curtis latch is edge-triggered so that merely holding a
+ * squeeze does not keep queueing trailing elements.
+ */
+static void keyer_core_paddles(keyer_t *keyer, int dot_down, int dash_down)
+{
+    dot_down = !!dot_down;
+    dash_down = !!dash_down;
+
+    keyer->dot_paddle = dot_down;
+    keyer->dash_paddle = dash_down;
+
+    if (dot_down)
+        keyer->dot_latch = 1;
+    if (dash_down)
+        keyer->dash_latch = 1;
+
+    if (keyer->mode_b && dot_down && dash_down && !keyer->both_closed)
+        keyer->curtis_b_latch = 1;
+    keyer->both_closed = dot_down && dash_down;
+
+    if (keyer->state == KS_IDLE && (dot_down || dash_down)) {
+        /*
+         * Nudge the machine out of idle. Pretend we are at the end of the
+         * opposite space, then step once, matching libcw's initial nudge.
+         */
+        if (dot_down)
+            keyer->state = keyer->curtis_b_latch ? KS_AFTER_DASH_B
+                                                 : KS_AFTER_DASH_A;
+        else
+            keyer->state = keyer->curtis_b_latch ? KS_AFTER_DOT_B
+                                                 : KS_AFTER_DOT_A;
+        keyer_core_step(keyer);
+    }
+}
+
+/*
+ * Read the live paddle state plus any latched edges, and feed it to the
+ * keyer core.
+ */
+static void sample_keyer_paddles(keyer_t *keyer)
 {
     int dit_latched = atomic_exchange_explicit(&dit_edge, 0,
                                                memory_order_relaxed);
     int dah_latched = atomic_exchange_explicit(&dah_edge, 0,
                                                memory_order_relaxed);
 
-    if (ALOAD(dit_paddle) || dit_latched)
-        *dit_seen = 1;
-
-    if (ALOAD(dah_paddle) || dah_latched)
-        *dah_seen = 1;
+    keyer_core_paddles(keyer,
+                       ALOAD(dit_paddle) || dit_latched,
+                       ALOAD(dah_paddle) || dah_latched);
 }
 
 /*
- * Wait until an absolute monotonic deadline while continuously OR-ing live
- * and edge-latched paddle state into dit_seen/dah_seen.
- *
- * This implements paddle memory during both mark and following inter-element
- * space.
+ * Wait until an absolute monotonic deadline while feeding paddle samples
+ * into the keyer core. A press anywhere inside a mark or space sets the
+ * appropriate latch.
  */
-static void watch_until_ns(int64_t deadline, int *dit_seen, int *dah_seen)
+static void watch_keyer_until_ns(int64_t deadline, keyer_t *keyer)
 {
     while (keep_running()) {
         int64_t remaining;
 
-        sample_paddles(dit_seen, dah_seen);
+        sample_keyer_paddles(keyer);
 
         remaining = deadline - mono_ns();
         if (remaining <= 0)
@@ -857,16 +1043,12 @@ static int take_mark(mark_t *mark)
 }
 
 /*
- * Curtis-8044-style iambic Mode B keyer.
+ * Curtis 8044 iambic keyer driver.
  *
- * Decision priority:
- *
- *   1. Queued one-shot opposite-paddle memory element.
- *   2. Genuine live squeeze: alternate relative to previous element.
- *   3. Single live/requested paddle: repeat that element.
- *
- * The edge latches prevent short key-down pulses from being missed while idle
- * or during timing windows.
+ * The decision logic lives in the keyer core above; this thread only clocks
+ * it. Each iteration sends the mark selected by the current IN_* state,
+ * samples the paddles through the mark and its one-dit space, then advances
+ * the graph at the end of the mark and again at the end of the space.
  */
 static void *keyer_thread(void *arg)
 {
@@ -883,9 +1065,10 @@ static void *keyer_thread(void *arg)
     const int64_t word_gap_ns = dit_ns * 7;
     const int64_t char_gap_ns = dit_ns * 3;
 
-    int last_was_dit = 0;
-    int dit_mem = 0;
-    int dah_mem = 0;
+    keyer_t keyer = {0};
+    keyer.mode_b = do_mode_b;
+    keyer.state = KS_IDLE;
+
     char sym[16];
     size_t sym_len = 0;
     int64_t gap_start = 0;    /* mono_ns() when the current idle gap began */
@@ -893,108 +1076,71 @@ static void *keyer_thread(void *arg)
     int space_emitted = 0;    /* space already printed for this idle gap */
 
     while (keep_running()) {
-        int dit_event;
-        int dah_event;
-        int dit_live;
-        int dah_live;
-        int dit_req;
-        int dah_req;
-        int send_dit;
-        int seen_dit;
-        int seen_dah;
+        if (keyer.state == KS_IDLE) {
+            /* A press here nudges the graph into its first element. */
+            sample_keyer_paddles(&keyer);
 
-        /*
-         * Consume idle-time edge latches. If a very short press occurred
-         * between iterations, this still starts an element.
-         */
-        dit_event = atomic_exchange_explicit(&dit_edge, 0,
-                                             memory_order_relaxed);
-        dah_event = atomic_exchange_explicit(&dah_edge, 0,
-                                             memory_order_relaxed);
+            if (keyer.state == KS_IDLE) {
+                /*
+                 * Idle: the symbol being keyed is complete. If the decode
+                 * display is active, print it.
+                 */
+                if (do_decode && sym_len &&
+                    mono_ns() - gap_start >= char_gap_ns) {
+                    char ch = morse_decode(sym, sym_len);
 
-        dit_live = ALOAD(dit_paddle);
-        dah_live = ALOAD(dah_paddle);
+                    /* Unknown symbols are dropped. */
+                    if (ch != '\0') {
+                        fputc(ch, stdout);
+                        printed_char = 1;
+                    }
 
-        dit_req = dit_live || dit_event;
-        dah_req = dah_live || dah_event;
-
-        if (dit_mem || dah_mem) {
-            send_dit = dit_mem ? 1 : 0;
-            dit_mem = 0;
-            dah_mem = 0;
-        } else if (dit_req && dah_req) {
-            send_dit = !last_was_dit;
-        } else if (dit_req) {
-            send_dit = 1;
-        } else if (dah_req) {
-            send_dit = 0;
-        } else {
-            /*
-             * Idle: the symbol being keyed is complete. If the decode
-             * display is active, print it.
-             */
-            if (do_decode && sym_len && mono_ns() - gap_start >= char_gap_ns) {
-                char ch = morse_decode(sym, sym_len);
-
-                /* Unknown symbols are dropped. */
-                if (ch != '\0') {
-                    fputc(ch, stdout);
-                    printed_char = 1;
+                    fflush(stdout);
+                    sym_len = 0;
                 }
 
-                fflush(stdout);
-                sym_len = 0;
-            }
+                /*
+                 * Decode display: an idle gap longer than seven dits (the
+                 * ITU word gap) between characters is a word gap; print a
+                 * single space for it.
+                 */
+                if (do_decode && gap_start > 0 &&
+                    printed_char && !space_emitted &&
+                    (mono_ns() - gap_start) > word_gap_ns) {
+                    fputc(' ', stdout);
+                    fflush(stdout);
+                    space_emitted = 1;
+                }
 
-            /*
-             * Decode display: an idle gap longer than seven dits (the ITU
-             * word gap) between characters is a word gap; print a single
-             * space for it.
-             */
-            if (do_decode && gap_start > 0 &&
-                printed_char && !space_emitted &&
-                (mono_ns() - gap_start) > word_gap_ns) {
-                fputc(' ', stdout);
-                fflush(stdout);
-                space_emitted = 1;
+                /*
+                 * Idle poll interval. Lower values reduce input-to-keyer
+                 * latency but increase wakeups.
+                 */
+                sleep_ns(200000LL);
+                continue;
             }
-
-            /*
-             * Idle poll interval. Lower values reduce input-to-keyer latency
-             * but increase wakeups.
-             */
-            sleep_ns(200000LL);
-            continue;
         }
 
-        /*
-         * Include the start-of-element requests in the memory window.
-         */
-        seen_dit = dit_req;
-        seen_dah = dah_req;
-
+        /* In an IN_* state: emit this mark. */
+        int send_dit = keyer_symbol(&keyer);
         int64_t mark_start = mono_ns();
         int64_t mark_duration = send_dit ? dit_ns : dah_ns;
         int64_t mark_end = mark_start + mark_duration;
+
         if (queue_mark(mark_start, mark_duration) < 0)
             break;
-        watch_until_ns(mark_end, &seen_dit, &seen_dah);
-        last_was_dit = send_dit;
+
+        watch_keyer_until_ns(mark_end, &keyer);
+        keyer_core_step(&keyer);            /* end of mark: IN -> AFTER */
+
         gap_start = mark_end;
         space_emitted = 0;
 
-        watch_until_ns(mark_end + space_ns, &seen_dit, &seen_dah);
+        watch_keyer_until_ns(mark_end + space_ns, &keyer);
+        keyer_core_step(&keyer);            /* end of space: AFTER -> next */
 
         if (do_decode && sym_len + 1 < sizeof(sym))
             sym[sym_len++] = send_dit ? '.' : '-';
-
-        /*
-         * Curtis Mode B one-shot memory: latch only the opposite paddle.
-         */
-        if (send_dit)
-            dah_mem = seen_dah;
-        else
-            dit_mem = seen_dit;
     }
 
     return NULL;
@@ -1354,10 +1500,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
-  alsa_latency_us = parse_uint_env("CW_ALSA_LATENCY_US",
-                                 20000,
-                                 1000,
-                                 100000);
+    alsa_latency_us = parse_uint_env("CW_ALSA_LATENCY_US",
+                                     20000,
+                                     1000,
+                                     100000);
+    parse_mode_env();
 
     if (install_signal_handlers() < 0)
         return 1;
@@ -1370,12 +1517,14 @@ int main(int argc, char **argv)
     disable_terminal_echo();
 
     fprintf(stderr,
-            "CW keyer: %.2f WPM, %.2f Hz, dit code %d, dah code %d, %s%s\n",
+            "CW keyer: %.2f WPM, %.2f Hz, dit code %d, dah code %d, %s, "
+            "Curtis mode %c%s\n",
             wpm,
             freq_hz,
             dit_code,
             dah_code,
             do_grab ? "EVIOCGRAB enabled" : "nograb",
+            do_mode_b ? 'B' : 'A',
             do_decode ? ", decode" : "");
 
     pcm = open_audio(&actual_rate);

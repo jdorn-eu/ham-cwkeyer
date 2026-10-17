@@ -3,23 +3,25 @@
 Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand adapter working as an iambic keyer in software.
 ## Design description
 - Reads evdev (/dev/input/eventX) input from adapter or alternatively keyboard input
-- Runs an iambic mode B keyer (Curtis-8044 style, with paddle memory)
+- Runs a Curtis 8044 iambic keyer, mode A or B, with dot/dash paddle memory
 - Renders each mark and its raised-cosine attack/release at PCM sample boundaries; late input/audio scheduling may still lengthen gaps
 - Sends the sine wave to ALSA's `pulse` device by default, with `PULSE_SINK=cw_out` for the mic-mixing setup
 
 ### Keying and audio timing
 
-The evdev thread tracks paddle state, including short presses and recovery from dropped input events. The keyer thread makes iambic Mode B decisions and watches the paddles through each mark and its following one-dit space, using monotonic deadlines for the nominal 1:3 dit/dah timing. With `decode` off, it does no Morse decoding or terminal output.
+The evdev thread tracks paddle state, including short presses and recovery from dropped input events. The keyer thread runs a state machine that mirrors the Curtis 8044 iambic graph (the same graph UnixCW's libcw uses), and watches the paddles through each mark and its following one-dit space, using monotonic deadlines for the nominal 1:3 dit/dah timing. With `decode` off, it does no Morse decoding or terminal output.
+
+The default is **mode B**, which is what "Curtis" usually means and what the 8044 does when squeezed: if both paddles are closed together, the keyer finishes the current element and then sends one extra opposite element. For example, a quick squeeze keys dot-dash-dot. Set `CW_KEYER_MODE=a` for mode A, which stops after dot-dash instead. The pump mechanism (held paddles repeat, a squeeze alternates) is identical in both modes.
 
 For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate ALSA actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range. The audio renderer enforces at least a one-dit silent gap; late delivery cannot shorten a mark, but scheduling delays or ALSA underruns can make a gap longer. ALSA buffering also adds audible latency, which is separate from the generated mark length.
 
-The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements. `make test` checks decoding, sample-level envelope/spacing across PCM buffer boundaries, late marks, and the high-speed ramp; it does not test the evdev device or your audio routing. A live paddle/listening check is still useful after changing timing or ALSA settings.
+The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements. `make test` checks the iambic graph (including the mode A/mode B squeeze difference, held-paddle repeats, and alternating squeezes), decoding, sample-level envelope/spacing across PCM buffer boundaries, late marks, and the high-speed ramp; it does not test the evdev device or your audio routing. A live paddle/listening check is still useful after changing timing or ALSA settings.
 
 ## Build
 ```
 sudo dnf install gcc alsa-lib-devel
 make
-make test   # hardware-independent decoder and PCM timing checks
+make test   # hardware-independent iambic, decoder, and PCM timing checks
 ```
 
 In order for your user session to be able to access the adapter input, set proper udev rules:
@@ -52,6 +54,7 @@ With `decode`, each keyed symbol is printed as text as you key, without newlines
 ## Environment
 - `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is set to `cw_out` by the keyer.
 - `CW_ALSA_LATENCY_US` Requested ALSA latency in microseconds. Default: `20000` (20 ms). ALSA may negotiate a different buffer/period; the achieved values are printed at startup. Smaller buffers may reduce latency but increase underrun risk.
+- `CW_KEYER_MODE` Curtis iambic mode, `a` or `b` (case-insensitive; also accepts `mode_a`/`mode_b`). Default: `b`. The mode is printed at startup.
 - `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, it defaults to `cw_out`, the combined sink created by `cw-mic-mix.sh`. If you haven't run that script, set it explicitly to a real sink, e.g. `PULSE_SINK=$(pactl get-default-sink)`.
 
 ## Combine with mic input
