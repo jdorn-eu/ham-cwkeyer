@@ -71,6 +71,11 @@
 
 #define NS_PER_SEC 1000000000LL
 
+/* Set by the build (see Makefile); "unknown" for an unversioned build. */
+#ifndef CWKEYER_VERSION
+#define CWKEYER_VERSION "unknown"
+#endif
+
 enum {
     AUDIO_RATE = 48000,
     AUDIO_PERIOD_FRAMES = 128
@@ -286,6 +291,7 @@ static void usage(const char *prog)
 {
     fprintf(stderr,
         "usage: %s /dev/input/eventX [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode]\n"
+        "       %s --help | --version\n"
         "\n"
         "Examples:\n"
         "  %s /dev/input/eventX\n"
@@ -310,6 +316,8 @@ static void usage(const char *prog)
         "            newlines. Unknown symbols are ignored. A pause of\n"
         "            more than seven dits between characters prints a\n"
         "            space (the ITU word gap).\n"
+        "  --help    Print this help and exit.\n"
+        "  --version Print the version and exit.\n"
         "\n"
         "While running, terminal echo is disabled so keystrokes do not\n"
         "print in the window; the previous terminal state is restored\n"
@@ -323,7 +331,7 @@ static void usage(const char *prog)
         "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
         "                             unset, it defaults to cw_out (created by\n"
         "                             cw-mic-mix.sh)\n",
-        prog, prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static double parse_double_arg(const char *s,
@@ -1550,6 +1558,12 @@ int main(int argc, char **argv)
     if (argc == 2 &&
         (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
         usage(argv[0]);
+        return 0;
+    }
+
+    if (argc == 2 &&
+        (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
+        printf("cwkeyer %s\n", CWKEYER_VERSION);
         return 0;
     }
 

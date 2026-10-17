@@ -1,0 +1,150 @@
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.TH CWKEYER 1 "2026" "ham-cwkeyer" "User Commands"
+.SH NAME
+cwkeyer \- low-latency iambic CW sidetone keyer
+.SH SYNOPSIS
+.B cwkeyer
+.I /dev/input/eventX
+.RI [ wpm ]
+.RI [ freq_hz ]
+.RI [ dit_key ]
+.RI [ dah_key ]
+.RI [ nograb ]
+.RI [ decode ]
+.br
+.B cwkeyer
+.B \-\-help
+.br
+.B cwkeyer
+.B \-\-version
+.SH DESCRIPTION
+.B cwkeyer
+reads an evdev keyboard-emulating paddle adapter and generates an ALSA
+sidetone. It implements the Curtis 8044 iambic keyer, with selectable mode
+A or B and dot/dash paddle memory, and then decodes to text.
+.PP
+The paddle inputs are debounced the way the 8044's RC input filter does it:
+a level change is accepted only after it has been stable for the debounce
+hold time.
+.SH ARGUMENTS
+.TP
+.I /dev/input/eventX
+The evdev device to read. Use
+.BR evtest (8)
+or
+.BR libinput (1)
+to find it. A normal keyboard is usually
+.IR /dev/input/event3 .
+.TP
+.I wpm
+Keying speed in words per minute (default 12, range 1\(en300).
+.TP
+.I freq_hz
+Sidetone frequency in hertz (default 800).
+.TP
+.IR dit_key ", " dah_key
+evdev key names or codes for the dit and dah paddles (default
+.B LEFTCTRL
+and
+.BR RIGHTCTRL ).
+Known names include
+.BR COMMA ,
+.BR DOT ,
+.BR LEFT ,
+.BR RIGHT ,
+.BR Z ,
+and
+.BR X ;
+a
+.B KEY_
+prefix and raw numeric codes are also accepted.
+.TP
+.B nograb
+Do not take exclusive control of the input device; useful when testing on
+the keyboard you are typing on.
+.TP
+.B decode
+Print each keyed symbol decoded to text, without newlines. Unknown symbols
+are ignored, and a pause longer than seven dits prints a space.
+.SH OPTIONS
+.TP
+.BR \-\-help ", " \-h
+Print a short usage message and exit.
+.TP
+.BR \-\-version ", " \-V
+Print the version and exit.
+.SH ENVIRONMENT
+.TP
+.B CW_ALSA_DEVICE
+ALSA PCM to open (default
+.BR pulse ).
+.TP
+.B CW_ALSA_LATENCY_US
+Requested ALSA latency in microseconds (default 20000). ALSA may negotiate
+a different buffer and period; the achieved values are printed at startup.
+.TP
+.B CW_KEYER_MODE
+Curtis iambic mode,
+.B a
+or
+.B b
+(case-insensitive).
+.B b
+is the default. In mode B a released squeeze leaves the opposite memory set
+and one extra element is keyed; in mode A it stops at the element in
+progress.
+.TP
+.B CW_KEYER_DEBOUNCE_MS
+Paddle debounce hold time in milliseconds, 0\(en50 (default 5). Any level
+change shorter than this is treated as contact bounce and discarded. Set to
+0 to disable debouncing.
+.TP
+.B PULSE_SINK
+PulseAudio/PipeWire sink for the sidetone. If
+.B CW_ALSA_DEVICE
+is
+.B pulse
+and this is unset or empty, it defaults to
+.BR cw_out ,
+the combined sink created by
+.BR cw-mic-mix (1).
+.SH SIGNALS
+.B SIGINT
+and
+.B SIGTERM
+stop the keyer and restore the terminal and the input grab.
+.B SIGHUP
+and
+.B SIGQUIT
+do the same.
+.B SIGTSTP
+(Ctrl+Z) releases the terminal and the input device before suspending and
+re-establishes them on
+.BR SIGCONT .
+.SH EXAMPLES
+.TP
+.B cwkeyer /dev/input/event3
+12 WPM, 800 Hz on a keyboard.
+.TP
+.B cwkeyer /dev/input/event3 25 700
+25 WPM at 700 Hz.
+.TP
+.B cwkeyer /dev/input/event3 25 700 COMMA DOT nograb decode
+Remap the paddles, do not grab the device, and decode to text.
+.SH FILES
+.TP
+.I /dev/input/eventX
+Paddle input device.
+.TP
+.I /dev/input/
+evdev devices; see the README for the recommended udev rule.
+.SH SEE ALSO
+.BR evtest (8),
+.BR libinput (1),
+.BR pactl (1)
+.PP
+The project README and
+.B cw-mic-mix
+helper.
+.SH LICENSE
+GPL-3.0-or-later.

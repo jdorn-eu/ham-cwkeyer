@@ -50,9 +50,20 @@ Mode behaviour follows the primary sources: the Curtis Electro Devices *8044 Ser
 ```
 sudo dnf install gcc alsa-lib-devel
 make        # strict build (-Werror plus a broad warning set)
-make test   # iambic, debounce, evdev, decode, driver, signal, and script checks
+make test    # iambic, debounce, evdev, decode, driver, signal, and script checks
 make analyze # GCC -fanalyzer
+make coverage # gcovr HTML/XML report in coverage/
 ```
+
+## Install
+
+```
+make install                        # /usr/local by default
+make install PREFIX=/usr            # or another prefix
+make install DESTDIR=/tmp/stage PREFIX=/usr   # for packagers
+```
+
+This installs `cwkeyer`, the `cw-mic-mix` helper, and the `cwkeyer(1)` man page. `make uninstall` removes them. `make dist` produces a `ham-cwkeyer-<version>.tar.gz` from the current commit; the version comes from `git describe`, or override it with `make VERSION=1.2.3`. Run `cwkeyer --version` to see the version a binary was built with.
 
 In order for your user session to be able to access the adapter input, set proper udev rules:
 ```
