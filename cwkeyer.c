@@ -96,6 +96,15 @@ static int64_t debounce_ns = 5000000LL;
 
 static unsigned int alsa_latency_us = 20000;
 
+/*
+ * Diagnostics gathered during a run and reported at exit. Each counter is
+ * written by one thread and only read after that thread has joined.
+ */
+static unsigned int audio_underruns = 0;
+static unsigned int keyer_late_elements = 0;
+static int64_t keyer_max_overrun_ns = 0;
+static int64_t keyer_late_threshold_ns = 1000000LL;   /* 1 ms */
+
 static atomic_int dit_paddle = 0;
 static atomic_int dah_paddle = 0;
 
@@ -1221,9 +1230,13 @@ static void *keyer_thread(void *arg)
     keyer.state = KY_IDLE;
 
     decode_state_t dec = {0};
+    int64_t prev_expected_start = 0;
 
     while (keep_running()) {
         if (keyer.state == KY_IDLE) {
+            /* A new burst; don't measure this start against the last one. */
+            prev_expected_start = 0;
+
             /* A press here nudges the graph into its first element. */
             sample_keyer_paddles(&keyer);
 
@@ -1245,6 +1258,21 @@ static void *keyer_thread(void *arg)
         int64_t mark_start = mono_ns();
         int64_t mark_duration = send_dit ? dit_ns : dah_ns;
         int64_t mark_end = mark_start + mark_duration;
+
+        /*
+         * Compare this element's start with where the previous element's
+         * nominal mark + space should have ended. A large positive overrun
+         * means scheduling delayed the keyer and the gap grew.
+         */
+        if (prev_expected_start != 0) {
+            int64_t overrun = mark_start - prev_expected_start;
+
+            if (overrun > keyer_max_overrun_ns)
+                keyer_max_overrun_ns = overrun;
+            if (overrun > keyer_late_threshold_ns)
+                keyer_late_elements++;
+        }
+        prev_expected_start = mark_end + space_ns;
 
         if (queue_mark(mark_start, mark_duration) < 0)
             break;
@@ -1271,6 +1299,14 @@ static int recover_pcm(snd_pcm_t *pcm, int err, const char *where)
 
     if (err == -EINTR)
         return 0;
+
+    if (err == -EPIPE) {
+        audio_underruns++;
+        if (audio_underruns <= 3)
+            fprintf(stderr,
+                    "warning: ALSA underrun #%u during %s; recovering\n",
+                    audio_underruns, where);
+    }
 
     rc = snd_pcm_recover(pcm, err, 1);
     if (rc < 0) {
@@ -1690,6 +1726,14 @@ int main(int argc, char **argv)
 
     snd_pcm_close(pcm);
     restore_terminal();
+
+    /* Only mention the audio health if something actually went wrong. */
+    if (audio_underruns || keyer_late_elements)
+        fprintf(stderr,
+                "audio: %u ALSA underrun(s), %u late element(s) "
+                "(max %.1f ms)\n",
+                audio_underruns, keyer_late_elements,
+                (double)keyer_max_overrun_ns / 1000000.0);
 
     return ALOAD(fatal_error) ? 1 : 0;
 }

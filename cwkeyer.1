@@ -121,6 +121,11 @@ do the same.
 (Ctrl+Z) releases the terminal and the input device before suspending and
 re-establishes them on
 .BR SIGCONT .
+.SH DIAGNOSTICS
+When the keyer stops it prints a summary to standard error if any ALSA
+underruns occurred or if any element started more than a millisecond later
+than its nominal mark plus space, together with the worst delay. A run with
+no audio problems prints nothing there.
 .SH EXAMPLES
 .TP
 .B cwkeyer /dev/input/event3

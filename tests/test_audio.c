@@ -86,6 +86,16 @@ int main(void)
     ASTORE(running, 0);
     pthread_join(tid, NULL);
 
+    /* An EPIPE is counted as an underrun and recovered. */
+    audio_underruns = 0;
+    redirect_stderr(&saved);
+    int rc = recover_pcm(pcm, -EPIPE, "test");
+    restore_stderr(saved);
+    if (rc != 0 || audio_underruns != 1) {
+        fprintf(stderr, "audio: recover_pcm(EPIPE) not counted\n");
+        failures++;
+    }
+
     snd_pcm_close(pcm);
 
     /* A non-existent device must fail cleanly. */

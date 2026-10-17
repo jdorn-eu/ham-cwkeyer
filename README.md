@@ -26,6 +26,8 @@ For each element, the keyer queues its start time and duration. The audio thread
 
 The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements.
 
+Audio health is reported at exit: ALSA underruns are counted (and the first few logged as they happen), and the keyer counts elements that started more than 1 ms later than their nominal mark + space. If either is non-zero, a summary line with the count and the worst delay is printed when the keyer stops; a clean run stays silent.
+
 ## Tests
 
 The build is deliberately strict by default: `-Werror` plus a broad warning set (including `-Wconversion`, `-Wsign-conversion`, `-Wshadow`, `-Wcast-qual`, and `-Wdouble-promotion`). Both GCC and clang are supported; the Makefile adapts the warning flags to the compiler (`make CC=clang`). Pass `make WERROR=` to build despite warnings on an unknown toolchain. `make analyze` runs GCC's `-fanalyzer`.

@@ -481,6 +481,10 @@ static int run_driver_tests(void)
     do_decode = 0;
     stop_requested = 0;
 
+    /* Count any positive overrun so the timing diagnostic is exercised. */
+    keyer_late_threshold_ns = 0;
+    keyer_late_elements = 0;
+
     /* Holding dit repeats dits. */
     atomic_store_explicit(&mark_read, 0, memory_order_relaxed);
     atomic_store_explicit(&mark_write, 0, memory_order_relaxed);
@@ -539,6 +543,12 @@ static int run_driver_tests(void)
             break;
         }
     }
+
+    if (keyer_late_elements == 0) {
+        fprintf(stderr, "driver: no keyer timing overruns observed\n");
+        failures++;
+    }
+    keyer_late_threshold_ns = 1000000LL;
 
     clear_input_state();
     return failures;
