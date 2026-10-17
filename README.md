@@ -75,5 +75,6 @@ Tear it down again with:
 ```
 
 Notes:
-- The script is idempotent: re-running it is safe, leftover modules from a previous (or crashed) run are unloaded first.
-- Works on both PulseAudio and PipeWire; it handles the different `pactl` module list formats of the two.
+- The script is idempotent: re-running it is safe, leftover modules from a previous (or crashed) run are unloaded first. If a module load fails or setup catches HUP, INT, or TERM, modules created by that attempt are rolled back; after SIGKILL or power loss, rerun the script or use `--unload` to remove leftovers.
+- `RATE` must be 8000–192000 Hz, `CHANNELS` 1–8, and `LOOP_LATENCY_MS` 0–1000; invalid settings are rejected before changing the audio setup.
+- Works on both PulseAudio and PipeWire; it handles common `pactl` module-list formats used by the two.
