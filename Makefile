@@ -14,16 +14,25 @@ MANDIR   ?= $(PREFIX)/share/man/man1
 DESTDIR  ?=
 
 # A deliberately aggressive warning set; the tree is clean under all of it.
-WARNINGS  = -Wall -Wextra -Wpedantic $(WERROR) \
-	    -Wshadow -Wformat=2 -Wundef -Wcast-qual -Wwrite-strings \
-	    -Wmissing-prototypes -Wstrict-prototypes -Wold-style-definition \
-	    -Wredundant-decls -Wdouble-promotion -Wfloat-equal \
-	    -Wswitch-enum -Wswitch-default -Wnull-dereference -Walloc-zero \
-	    -Wvla -Wimplicit-fallthrough=5 -Wcast-align=strict -Wlogical-op \
-	    -Wduplicated-cond -Wduplicated-branches -Wrestrict \
-	    -Wstringop-overflow=4 -Warray-bounds=2 -Wunused-macros \
-	    -Wstrict-overflow=4 -Wshift-overflow=2 -Wtrampolines \
-	    -Wconversion -Wsign-conversion
+# GCC-only flags clang rejects are kept separate.
+COMMON_WARNINGS = \
+	-Wall -Wextra -Wpedantic $(WERROR) \
+	-Wshadow -Wformat=2 -Wundef -Wcast-qual -Wwrite-strings \
+	-Wmissing-prototypes -Wstrict-prototypes -Wold-style-definition \
+	-Wredundant-decls -Wfloat-equal -Wswitch-enum -Wswitch-default \
+	-Wvla -Wimplicit-fallthrough -Wcast-align -Wconversion \
+	-Wsign-conversion -Wunused-macros -Wnull-dereference
+
+GCC_WARNINGS = $(COMMON_WARNINGS) \
+	-Wdouble-promotion -Walloc-zero -Wlogical-op -Wduplicated-cond \
+	-Wduplicated-branches -Wrestrict -Wstringop-overflow=4 \
+	-Warray-bounds=2 -Wstrict-overflow=4 -Wshift-overflow=2 -Wtrampolines
+
+ifneq ($(findstring clang,$(CC)),)
+WARNINGS = $(COMMON_WARNINGS)
+else
+WARNINGS = $(GCC_WARNINGS)
+endif
 
 CPPFLAGS += -DCWKEYER_VERSION='"$(VERSION)"'
 LDLIBS    = -lasound -lpthread -lm

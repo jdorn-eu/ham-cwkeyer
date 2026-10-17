@@ -28,7 +28,7 @@ The mark queue is bounded. If audio falls far enough behind to fill it, the prog
 
 ## Tests
 
-The build is deliberately strict by default: `-Werror` plus a broad warning set (including `-Wconversion`, `-Wsign-conversion`, `-Wshadow`, `-Wcast-qual`, and `-Wdouble-promotion`). Pass `make WERROR=` to build despite warnings on an unknown toolchain. `make analyze` runs GCC's `-fanalyzer`.
+The build is deliberately strict by default: `-Werror` plus a broad warning set (including `-Wconversion`, `-Wsign-conversion`, `-Wshadow`, `-Wcast-qual`, and `-Wdouble-promotion`). Both GCC and clang are supported; the Makefile adapts the warning flags to the compiler (`make CC=clang`). Pass `make WERROR=` to build despite warnings on an unknown toolchain. `make analyze` runs GCC's `-fanalyzer`.
 
 `make test` builds and runs three hardware-independent suites; it does not touch your input device, audio routing, or sound server:
 
@@ -38,7 +38,7 @@ The build is deliberately strict by default: `-Werror` plus a broad warning set 
 
 A live paddle/listening check is still useful after changing timing, debouncing, or ALSA settings.
 
-CI (`.github/workflows/ci.yml`) runs the strict build, `make test`, `make analyze`, and `shellcheck`, plus a second job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer, on every push and pull request.
+CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict GCC build, `make test`, `make analyze`, and `shellcheck`; a clang build and test; and a sanitizer job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer.
 
 ## License
 
