@@ -22,7 +22,17 @@ In both modes a held paddle repeats its element and a held squeeze alternates, a
 
 For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate ALSA actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range. The audio renderer enforces at least a one-dit silent gap; late delivery cannot shorten a mark, but scheduling delays or ALSA underruns can make a gap longer. ALSA buffering also adds audible latency, which is separate from the generated mark length.
 
-The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements. `make test` checks the iambic core (the N and A memory tests, the mode A/mode B `K`/`C` difference, held-paddle repeats, and alternating squeezes), paddle debouncing (glitches rejected, bounce collapsed to one transition), decoding, sample-level envelope/spacing across PCM buffer boundaries, late marks, and the high-speed ramp; it does not test the evdev device or your audio routing. A live paddle/listening check is still useful after changing timing or ALSA settings.
+The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements.
+
+## Tests
+
+`make test` builds and runs three hardware-independent suites; it does not touch your input device, audio routing, or sound server:
+
+- `tests/test_keyer.c` — the iambic core (the N and A memory tests, the mode A/mode B `K`/`C` difference, held-paddle repeats, alternating squeezes), paddle debouncing (glitches rejected, bounce collapsed to one transition), evdev event parsing (press/release, autorepeat ignored, `SYN_DROPPED` resync), the decode display (character and word gaps, unknown symbols dropped), the PCM renderer (envelope, spacing across buffer boundaries, late marks, high-speed ramp), and a short run of the real `keyer_thread` to check mark sequencing.
+- `tests/test_signals.c` — `SIGPIPE` ignored, a stop signal stops the loops, terminal disable/restore is idempotent on a pty, and `SIGTSTP`/`SIGCONT` genuinely stop and resume.
+- `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation.
+
+A live paddle/listening check is still useful after changing timing, debouncing, or ALSA settings.
 
 ## License
 
@@ -34,7 +44,7 @@ Mode behaviour follows the primary sources: the Curtis Electro Devices *8044 Ser
 ```
 sudo dnf install gcc alsa-lib-devel
 make
-make test   # hardware-independent iambic, decoder, and PCM timing checks
+make test   # iambic, debounce, evdev, decode, driver, signal, and script checks
 ```
 
 In order for your user session to be able to access the adapter input, set proper udev rules:

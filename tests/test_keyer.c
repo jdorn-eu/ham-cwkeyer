@@ -290,6 +290,256 @@ static int run_debounce_tests(void)
     return failures;
 }
 
+/* ---------------- evdev event parsing ---------------- */
+
+static struct input_event make_event(int type, int code, int value)
+{
+    struct input_event e;
+
+    memset(&e, 0, sizeof(e));
+    e.type = type;
+    e.code = code;
+    e.value = value;
+    return e;
+}
+
+static int run_evdev_tests(void)
+{
+    int failures = 0;
+    int resync;
+    struct input_event e;
+
+    dit_code = KEY_LEFTCTRL;
+    dah_code = KEY_RIGHTCTRL;
+
+    /* A press sets the paddle and its edge latch. */
+    clear_input_state();
+    resync = 0;
+    e = make_event(EV_KEY, KEY_LEFTCTRL, 1);
+    evdev_handle_event(&e, &resync);
+    if (ALOAD(dit_paddle) != 1 || ALOAD(dit_edge) != 1 || resync) {
+        fprintf(stderr, "evdev: dit press not registered\n");
+        failures++;
+    }
+
+    /* A release clears the paddle. */
+    e = make_event(EV_KEY, KEY_LEFTCTRL, 0);
+    evdev_handle_event(&e, &resync);
+    if (ALOAD(dit_paddle) != 0) {
+        fprintf(stderr, "evdev: dit release not registered\n");
+        failures++;
+    }
+
+    /* Autorepeat (value 2) is ignored. */
+    clear_input_state();
+    e = make_event(EV_KEY, KEY_RIGHTCTRL, 2);
+    evdev_handle_event(&e, &resync);
+    if (ALOAD(dah_paddle) || ALOAD(dah_edge)) {
+        fprintf(stderr, "evdev: autorepeat treated as a press\n");
+        failures++;
+    }
+
+    /* Unrelated keys are ignored. */
+    e = make_event(EV_KEY, KEY_A, 1);
+    evdev_handle_event(&e, &resync);
+    if (ALOAD(dit_paddle) || ALOAD(dah_paddle)) {
+        fprintf(stderr, "evdev: unrelated key changed a paddle\n");
+        failures++;
+    }
+
+    /* SYN_DROPPED clears state and suppresses events until SYN_REPORT. */
+    clear_input_state();
+    ASTORE(dit_paddle, 1);
+    ASTORE(dah_edge, 1);
+    e = make_event(EV_SYN, SYN_DROPPED, 0);
+    evdev_handle_event(&e, &resync);
+    if (resync != 1 || ALOAD(dit_paddle) || ALOAD(dah_edge)) {
+        fprintf(stderr, "evdev: SYN_DROPPED did not clear and resync\n");
+        failures++;
+    }
+    e = make_event(EV_KEY, KEY_LEFTCTRL, 1);
+    if (evdev_handle_event(&e, &resync) || ALOAD(dit_paddle)) {
+        fprintf(stderr, "evdev: event applied during resync\n");
+        failures++;
+    }
+    e = make_event(EV_SYN, SYN_REPORT, 0);
+    if (!evdev_handle_event(&e, &resync) || resync) {
+        fprintf(stderr, "evdev: SYN_REPORT did not end resync\n");
+        failures++;
+    }
+
+    clear_input_state();
+    return failures;
+}
+
+/* ---------------- decode display ---------------- */
+
+static int run_decode_tests(void)
+{
+    int failures = 0;
+    const int64_t dit = 100000000LL;
+    const int64_t char_gap = dit * 3;
+    const int64_t word_gap = dit * 7;
+    char *buf = NULL;
+    size_t buflen = 0;
+
+    FILE *out = open_memstream(&buf, &buflen);
+    if (!out) {
+        fprintf(stderr, "decode: open_memstream failed\n");
+        return 1;
+    }
+
+    decode_state_t d = {0};
+    const int64_t base = 1000000LL;
+    d.gap_start = base;         /* as the driver sets it at the mark end */
+    decode_add_symbol(&d, 1);   /* . */
+    decode_add_symbol(&d, 0);   /* - */
+    decode_add_symbol(&d, 1);   /* . */
+
+    decode_idle(&d, 1, base + char_gap - 1, char_gap, word_gap, out);
+    if (buflen != 0) {
+        fprintf(stderr, "decode: printed before the character gap\n");
+        failures++;
+    }
+
+    decode_idle(&d, 1, base + char_gap, char_gap, word_gap, out);
+    if (strcmp(buf, "R") != 0) {
+        fprintf(stderr, "decode: want R, got '%s'\n", buf);
+        failures++;
+    }
+
+    decode_idle(&d, 1, base + word_gap + 1, char_gap, word_gap, out);
+    if (strcmp(buf, "R ") != 0) {
+        fprintf(stderr, "decode: want 'R ', got '%s'\n", buf);
+        failures++;
+    }
+
+    decode_idle(&d, 1, base + word_gap + 1 + dit, char_gap, word_gap, out);
+    if (strcmp(buf, "R ") != 0) {
+        fprintf(stderr, "decode: word gap printed more than one space\n");
+        failures++;
+    }
+
+    fclose(out);
+    free(buf);
+
+    /* Unknown symbols are dropped silently. */
+    buf = NULL;
+    buflen = 0;
+    out = open_memstream(&buf, &buflen);
+    if (!out) {
+        fprintf(stderr, "decode: open_memstream failed\n");
+        return 1;
+    }
+    decode_state_t u = {0};
+    u.gap_start = base;
+    for (int i = 0; i < 6; i++)
+        decode_add_symbol(&u, 0);   /* "------" is not a character */
+    decode_idle(&u, 1, base + char_gap, char_gap, word_gap, out);
+    if (u.sym_len != 0 || strcmp(buf, "") != 0) {
+        fprintf(stderr, "decode: unknown symbol not dropped (got '%s')\n", buf);
+        failures++;
+    }
+    fclose(out);
+    free(buf);
+
+    return failures;
+}
+
+/* ---------------- driver (keyer_thread) ---------------- */
+
+static int collect_marks(int64_t *durs, int max, int wait_ms)
+{
+    int n = 0;
+    struct timespec ts = {0, 1000000}; /* 1 ms */
+
+    for (int waited = 0; waited < wait_ms && n < max; waited++) {
+        mark_t m;
+        while (take_mark(&m) && n < max)
+            durs[n++] = m.duration_ns;
+        nanosleep(&ts, NULL);
+    }
+
+    return n;
+}
+
+static int run_driver_tests(void)
+{
+    int failures = 0;
+    const int64_t dit_ns = 20000000LL;   /* 60 wpm */
+    const int64_t dah_ns = 60000000LL;
+    int64_t durs[32];
+    pthread_t tid;
+    int n;
+
+    wpm = 60.0;
+    debounce_ns = 0;      /* test the sequencing, not the debounce */
+    do_decode = 0;
+    stop_requested = 0;
+
+    /* Holding dit repeats dits. */
+    atomic_store_explicit(&mark_read, 0, memory_order_relaxed);
+    atomic_store_explicit(&mark_write, 0, memory_order_relaxed);
+    clear_input_state();
+    ASTORE(dit_paddle, 1);
+    ASTORE(dah_paddle, 0);
+    ASTORE(running, 1);
+
+    if (pthread_create(&tid, NULL, keyer_thread, NULL) != 0) {
+        fprintf(stderr, "driver: pthread_create failed\n");
+        return 1;
+    }
+    n = collect_marks(durs, 32, 150);
+    ASTORE(running, 0);
+    pthread_join(tid, NULL);
+
+    if (n < 3) {
+        fprintf(stderr, "driver: held dit produced only %d marks\n", n);
+        failures++;
+    }
+    for (int i = 0; i < n; i++) {
+        if (durs[i] != dit_ns) {
+            fprintf(stderr, "driver: held dit mark %d was %lld ns\n",
+                    i, (long long)durs[i]);
+            failures++;
+            break;
+        }
+    }
+
+    /* Holding both alternates dit and dah. */
+    atomic_store_explicit(&mark_read, 0, memory_order_relaxed);
+    atomic_store_explicit(&mark_write, 0, memory_order_relaxed);
+    clear_input_state();
+    ASTORE(dit_paddle, 1);
+    ASTORE(dah_paddle, 1);
+    ASTORE(running, 1);
+
+    if (pthread_create(&tid, NULL, keyer_thread, NULL) != 0) {
+        fprintf(stderr, "driver: pthread_create failed\n");
+        return 1;
+    }
+    n = collect_marks(durs, 32, 250);
+    ASTORE(running, 0);
+    pthread_join(tid, NULL);
+
+    if (n < 4) {
+        fprintf(stderr, "driver: squeeze produced only %d marks\n", n);
+        failures++;
+    }
+    for (int i = 0; i + 1 < n; i++) {
+        int64_t want = (i % 2 == 0) ? dit_ns : dah_ns;
+        if (durs[i] != want) {
+            fprintf(stderr, "driver: squeeze mark %d was %lld ns\n",
+                    i, (long long)durs[i]);
+            failures++;
+            break;
+        }
+    }
+
+    clear_input_state();
+    return failures;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -361,6 +611,9 @@ int main(void)
 
     failures += run_iambic_tests();
     failures += run_debounce_tests();
+    failures += run_evdev_tests();
+    failures += run_decode_tests();
+    failures += run_driver_tests();
 
     if (failures)
         fprintf(stderr, "%d test(s) failed\n", failures);
