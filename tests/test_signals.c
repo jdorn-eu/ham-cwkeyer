@@ -103,7 +103,20 @@ int main(void)
         ASTORE(running, 1);
         if (install_signal_handlers() != 0)
             _exit(2);
+
+        /*
+         * Detach from the controlling terminal before suspending: on resume
+         * the SIGCONT handler would re-disable echo on whatever stdin points
+         * at, and the child would otherwise leave the shared terminal broken.
+         */
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            close(devnull);
+        }
+
         raise(SIGTSTP);
+        restore_terminal();   /* belt and braces */
         if (stop_requested)
             _exit(3);
         _exit(0);
