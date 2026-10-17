@@ -5,6 +5,11 @@ LDLIBS   = -lasound -lpthread -lm
 cwkeyer: cwkeyer.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
 
-.PHONY: clean
+.PHONY: test clean
+test:
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	$(CC) $(CFLAGS) -o "$$tmp/test_keyer" tests/test_keyer.c $(LDLIBS) && \
+	"$$tmp/test_keyer"
+
 clean:
 	rm -f cwkeyer

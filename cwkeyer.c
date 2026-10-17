@@ -11,7 +11,7 @@
  *   make   (or: gcc -O2 -Wall -Wextra -o cwkeyer cwkeyer.c -lasound -lpthread -lm)
  *
  * Run:
- *   ./cwkeyer /dev/input/eventX [wpm=20] [freq_hz=600] [dit_key] [dah_key] [nograb] [decode]
+ *   ./cwkeyer /dev/input/eventX [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode]
  *
  * Examples:
  *   ./cwkeyer /dev/input/eventX
@@ -72,8 +72,8 @@ enum {
     AUDIO_PERIOD_FRAMES = 128
 };
 
-static double wpm = 20.0;
-static double freq_hz = 600.0;
+static double wpm = 12.0;
+static double freq_hz = 800.0;
 
 static int dit_code = KEY_LEFTCTRL;
 static int dah_code = KEY_RIGHTCTRL;
@@ -92,7 +92,16 @@ static atomic_int dah_paddle = 0;
 static atomic_int dit_edge = 0;
 static atomic_int dah_edge = 0;
 
-static atomic_int key_on = 0;
+/* Single producer (keyer thread), single consumer (audio thread). */
+enum { MARK_QUEUE_SIZE = 256 };
+typedef struct {
+    int64_t start_ns;
+    int64_t duration_ns;
+} mark_t;
+static mark_t mark_queue[MARK_QUEUE_SIZE];
+static atomic_uint mark_write = 0;
+static atomic_uint mark_read = 0;
+
 static atomic_int running = 1;
 static atomic_int fatal_error = 0;
 
@@ -150,7 +159,7 @@ static int install_signal_handlers(void)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-        "usage: %s /dev/input/eventX [wpm=20] [freq_hz=600] [dit_key] [dah_key] [nograb] [decode]\n"
+        "usage: %s /dev/input/eventX [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode]\n"
         "\n"
         "Examples:\n"
         "  %s /dev/input/eventX\n"
@@ -372,16 +381,14 @@ static void sample_paddles(int *dit_seen, int *dah_seen)
 }
 
 /*
- * Wait for ns nanoseconds while continuously OR-ing live and edge-latched
- * paddle state into dit_seen/dah_seen.
+ * Wait until an absolute monotonic deadline while continuously OR-ing live
+ * and edge-latched paddle state into dit_seen/dah_seen.
  *
  * This implements paddle memory during both mark and following inter-element
  * space.
  */
-static void watch_ns(int64_t ns, int *dit_seen, int *dah_seen)
+static void watch_until_ns(int64_t deadline, int *dit_seen, int *dah_seen)
 {
-    int64_t deadline = mono_ns() + ns;
-
     while (keep_running()) {
         int64_t remaining;
 
@@ -417,7 +424,6 @@ static void clear_input_state(void)
     ASTORE(dah_paddle, 0);
     ASTORE(dit_edge, 0);
     ASTORE(dah_edge, 0);
-    ASTORE(key_on, 0);
 }
 
 static void set_key_state(int code, int down)
@@ -487,6 +493,7 @@ static void *evdev_thread(void *arg)
     const char *path = (const char *)arg;
     int fd;
     int fatal = 0;
+    int resync = 0;
 
     fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
@@ -544,6 +551,24 @@ static void *evdev_thread(void *arg)
                 ssize_t n = read(fd, &ev, sizeof(ev));
 
                 if (n == (ssize_t)sizeof(ev)) {
+                    if (resync) {
+                        if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+                            initialize_paddle_state_from_device(fd);
+                            resync = 0;
+                        }
+                        continue;
+                    }
+
+                    if (ev.type == EV_SYN && ev.code == SYN_DROPPED) {
+                        /* Event state is unreliable until the next report. */
+                        ASTORE(dit_paddle, 0);
+                        ASTORE(dah_paddle, 0);
+                        ASTORE(dit_edge, 0);
+                        ASTORE(dah_edge, 0);
+                        resync = 1;
+                        continue;
+                    }
+
                     if (ev.type == EV_KEY) {
                         /*
                          * ev.value:
@@ -638,8 +663,7 @@ static void restore_terminal(void)
 }
 
 /*
- * Morse code table for the decode display. Unknown symbols report '?',
- * which the caller drops.
+ * Morse code table for the decode display. Unknown symbols return '\0'.
  */
 static const struct {
     char ch;
@@ -656,8 +680,8 @@ static const struct {
     {'4', "....-"}, {'5', "....."}, {'6', "-...."}, {'7', "--..."},
     {'8', "---.."}, {'9', "----."},
     {'.', ".-.-.-"}, {',', "--..--"}, {'?', "..--.."}, {'/', "-..-."},
-    {'-', ".-.-."},  {'(', "-.--."},  {')', "-.--.-"}, {'"', ".-..-"},
-    {'\'', ".----."}, {'@', ".--.-."}, {'&', "....-."}, {'=', "-...-"},
+    {'-', "-....-"}, {'(', "-.--."},  {')', "-.--.-"}, {'"', ".-..-."},
+    {'\'', ".----."}, {'@', ".--.-."}, {'&', ".-..."}, {'=', "-...-"},
     {0, NULL}
 };
 
@@ -666,7 +690,7 @@ static char morse_decode(const char *s, size_t len)
     char buf[16];
 
     if (len >= sizeof(buf))
-        return '?';
+        return '\0';
 
     memcpy(buf, s, len);
     buf[len] = '\0';
@@ -676,7 +700,39 @@ static char morse_decode(const char *s, size_t len)
             return morse_table[i].ch;
     }
 
-    return '?';
+    return '\0';
+}
+
+static int64_t tone_ramp_ns(int64_t dit_ns)
+{
+    return dit_ns / 2 < 5000000LL ? dit_ns / 2 : 5000000LL;
+}
+
+static int queue_mark(int64_t start_ns, int64_t duration_ns)
+{
+    unsigned int write_pos = atomic_load_explicit(&mark_write, memory_order_relaxed);
+    unsigned int read_pos = atomic_load_explicit(&mark_read, memory_order_acquire);
+    if (write_pos - read_pos >= MARK_QUEUE_SIZE) {
+        fprintf(stderr, "audio mark queue overflow; stopping keyer\n");
+        request_stop(1);
+        return -1;
+    }
+
+    mark_queue[write_pos % MARK_QUEUE_SIZE] = (mark_t){ start_ns, duration_ns };
+    atomic_store_explicit(&mark_write, write_pos + 1, memory_order_release);
+    return 0;
+}
+
+static int take_mark(mark_t *mark)
+{
+    unsigned int read_pos = atomic_load_explicit(&mark_read, memory_order_relaxed);
+    unsigned int write_pos = atomic_load_explicit(&mark_write, memory_order_acquire);
+    if (read_pos == write_pos)
+        return 0;
+
+    *mark = mark_queue[read_pos % MARK_QUEUE_SIZE];
+    atomic_store_explicit(&mark_read, read_pos + 1, memory_order_release);
+    return 1;
 }
 
 /*
@@ -704,6 +760,7 @@ static void *keyer_thread(void *arg)
      * 7 between words).
      */
     const int64_t word_gap_ns = dit_ns * 7;
+    const int64_t char_gap_ns = dit_ns * 3;
 
     int last_was_dit = 0;
     int dit_mem = 0;
@@ -755,18 +812,16 @@ static void *keyer_thread(void *arg)
              * Idle: the symbol being keyed is complete. If the decode
              * display is active, print it.
              */
-            if (sym_len) {
-                if (do_decode) {
-                    char ch = morse_decode(sym, sym_len);
+            if (do_decode && sym_len && mono_ns() - gap_start >= char_gap_ns) {
+                char ch = morse_decode(sym, sym_len);
 
-                    /* Unknown symbols are dropped. */
-                    if (ch != '?') {
-                        fputc(ch, stdout);
-                        printed_char = 1;
-                    }
-
-                    fflush(stdout);
+                /* Unknown symbols are dropped. */
+                if (ch != '\0') {
+                    fputc(ch, stdout);
+                    printed_char = 1;
                 }
+
+                fflush(stdout);
                 sym_len = 0;
             }
 
@@ -797,17 +852,19 @@ static void *keyer_thread(void *arg)
         seen_dit = dit_req;
         seen_dah = dah_req;
 
-        ASTORE(key_on, 1);
-        watch_ns(send_dit ? dit_ns : dah_ns, &seen_dit, &seen_dah);
-
-        ASTORE(key_on, 0);
+        int64_t mark_start = mono_ns();
+        int64_t mark_duration = send_dit ? dit_ns : dah_ns;
+        int64_t mark_end = mark_start + mark_duration;
+        if (queue_mark(mark_start, mark_duration) < 0)
+            break;
+        watch_until_ns(mark_end, &seen_dit, &seen_dah);
         last_was_dit = send_dit;
-        gap_start = mono_ns();
+        gap_start = mark_end;
         space_emitted = 0;
 
-        watch_ns(space_ns, &seen_dit, &seen_dah);
+        watch_until_ns(mark_end + space_ns, &seen_dit, &seen_dah);
 
-        if (sym_len + 1 < sizeof(sym))
+        if (do_decode && sym_len + 1 < sizeof(sym))
             sym[sym_len++] = send_dit ? '.' : '-';
 
         /*
@@ -819,7 +876,6 @@ static void *keyer_thread(void *arg)
             dit_mem = seen_dit;
     }
 
-    ASTORE(key_on, 0);
     return NULL;
 }
 
@@ -841,7 +897,7 @@ static int recover_pcm(snd_pcm_t *pcm, int err, const char *where)
     return 0;
 }
 
-static snd_pcm_t *open_audio(void)
+static snd_pcm_t *open_audio(unsigned int *actual_rate)
 {
     const char *dev = getenv("CW_ALSA_DEVICE");
     const char *pulse_sink = getenv("PULSE_SINK");
@@ -858,9 +914,9 @@ static snd_pcm_t *open_audio(void)
      * send the keyer to the virtual combined sink created by cw-mic-mix.sh.
      */
     if (strcmp(dev, "pulse") == 0 && (!pulse_sink || !*pulse_sink)) {
-        if (setenv("PULSE_SINK", "cw_out", 0) == 0) {
+        if (setenv("PULSE_SINK", "cw_out", 1) == 0) {
             forced_sink = 1;
-            fprintf(stderr, "PULSE_SINK not set; defaulting to cw_out\n");
+            fprintf(stderr, "PULSE_SINK unset or empty; defaulting to cw_out\n");
         } else {
             fprintf(stderr,
                     "warning: could not set PULSE_SINK=cw_out: %s\n",
@@ -875,11 +931,9 @@ static snd_pcm_t *open_audio(void)
                 dev, snd_strerror(err));
         if (forced_sink) {
             fprintf(stderr,
-                    "PULSE_SINK was defaulted to 'cw_out', which does not "
-                    "exist.\n"
-                    "Run ./cw-mic-mix.sh first, or set PULSE_SINK to a real "
-                    "sink,\n"
-                    "e.g. PULSE_SINK=$(pactl get-default-sink)\n");
+                    "PULSE_SINK was defaulted to 'cw_out'. If that sink is "
+                    "unavailable, run ./cw-mic-mix.sh or set PULSE_SINK "
+                    "to a real sink, e.g. PULSE_SINK=$(pactl get-default-sink)\n");
         }
         return NULL;
     }
@@ -926,63 +980,118 @@ static snd_pcm_t *open_audio(void)
      * the request.
      */
     snd_pcm_hw_params_alloca(&hw);
-    if (hw && snd_pcm_hw_params_current(pcm, hw) == 0) {
-        unsigned int rate = 0;
-        snd_pcm_uframes_t buffer = 0, period = 0;
-
-        snd_pcm_hw_params_get_rate(hw, &rate, 0);
-        snd_pcm_hw_params_get_buffer_size(hw, &buffer);
-        snd_pcm_hw_params_get_period_size(hw, &period, 0);
-
-        if (rate) {
-            fprintf(stderr,
-                    "ALSA achieved: rate %u Hz, buffer %lu frames (%.1f ms), "
-                    "period %lu frames (%.1f ms)\n",
-                    rate, (unsigned long)buffer, 1000.0 * buffer / rate,
-                    (unsigned long)period, 1000.0 * period / rate);
-        }
+    err = snd_pcm_hw_params_current(pcm, hw);
+    if (err < 0 || snd_pcm_hw_params_get_rate(hw, actual_rate, 0) < 0 ||
+        *actual_rate == 0) {
+        fprintf(stderr, "cannot determine ALSA playback sample rate\n");
+        snd_pcm_close(pcm);
+        return NULL;
     }
+
+    if (freq_hz >= *actual_rate / 2.0) {
+        fprintf(stderr, "tone %.2f Hz is at or above the negotiated "
+                "Nyquist frequency (%u Hz sample rate)\n", freq_hz, *actual_rate);
+        snd_pcm_close(pcm);
+        return NULL;
+    }
+
+    snd_pcm_uframes_t buffer = 0, period = 0;
+    snd_pcm_hw_params_get_buffer_size(hw, &buffer);
+    snd_pcm_hw_params_get_period_size(hw, &period, 0);
+    fprintf(stderr,
+            "ALSA achieved: rate %u Hz, buffer %lu frames (%.1f ms), "
+            "period %lu frames (%.1f ms)\n",
+            *actual_rate, (unsigned long)buffer, 1000.0 * (double)buffer / *actual_rate,
+            (unsigned long)period, 1000.0 * (double)period / *actual_rate);
 
     return pcm;
 }
 
-static void generate_audio(int16_t *buf,
-                           size_t frames,
-                           double *phase,
-                           double *env,
-                           double phase_inc,
-                           double env_step)
+typedef struct {
+    uint64_t frame;
+    uint64_t anchor_frame;
+    uint64_t mark_start;
+    uint64_t mark_end;
+    uint64_t next_start;
+    uint64_t gap_frames;
+    uint64_t ramp_frames;
+    int64_t anchor_ns;
+    mark_t pending;
+    int has_pending;
+    int has_mark;
+    double phase;
+} audio_state_t;
+
+static uint64_t ns_to_frames(int64_t ns, unsigned int rate)
+{
+    return (uint64_t)llround((double)ns * rate / 1e9);
+}
+
+static void generate_audio(int16_t *buf, size_t frames,
+                           audio_state_t *state, unsigned int rate)
 {
     const double two_pi = 2.0 * M_PI;
-    const double amplitude = 12000.0;
+    const double phase_inc = two_pi * freq_hz / rate;
+    /* Match UnixCW's default 70% of the 16-bit PCM amplitude range. */
+    const double amplitude = (70 * 32768) / 100;
 
-    for (size_t i = 0; i < frames; i++) {
-        double target = ALOAD(key_on) ? 1.0 : 0.0;
-        double sample;
+    for (size_t i = 0; i < frames; i++, state->frame++) {
+        double gain = 0.0;
 
-        if (*env < target) {
-            *env += env_step;
-            if (*env > target)
-                *env = target;
-        } else if (*env > target) {
-            *env -= env_step;
-            if (*env < target)
-                *env = target;
+        if (!state->has_pending && take_mark(&state->pending)) {
+            state->has_pending = 1;
+            /* Re-anchor after a long idle period to avoid accumulating
+             * drift between the monotonic and PCM playback clocks. */
+            if (!state->has_mark || state->pending.start_ns - state->anchor_ns >
+                (int64_t)llround(1.2e9 / wpm) * 7) {
+                state->anchor_ns = state->pending.start_ns;
+                state->anchor_frame = state->frame;
+            }
+            state->next_start = state->anchor_frame +
+                ns_to_frames(state->pending.start_ns - state->anchor_ns, rate);
+            if (state->has_mark &&
+                state->next_start < state->mark_end + state->gap_frames)
+                state->next_start = state->mark_end + state->gap_frames;
         }
 
-        sample = (*env) * amplitude * sin(*phase);
+        if (state->has_pending && state->frame >= state->next_start) {
+            uint64_t mark_frames = ns_to_frames(state->pending.duration_ns, rate);
+            if (!mark_frames)
+                mark_frames = 1;
+            state->mark_start = state->frame;
+            state->mark_end = state->frame + mark_frames;
+            state->anchor_ns = state->pending.start_ns;
+            state->anchor_frame = state->frame;
+            state->ramp_frames = ns_to_frames(tone_ramp_ns(
+                (int64_t)llround(1.2e9 / wpm)), rate);
+            if (state->ramp_frames > mark_frames / 2)
+                state->ramp_frames = mark_frames / 2;
+            state->has_mark = 1;
+            state->has_pending = 0;
+        }
 
-        if (sample > 32767.0)
-            sample = 32767.0;
-        else if (sample < -32768.0)
-            sample = -32768.0;
+        if (state->has_mark && state->frame < state->mark_end) {
+            uint64_t from_start = state->frame - state->mark_start;
+            uint64_t from_end = state->mark_end - state->frame - 1;
+            if (state->ramp_frames && from_start < state->ramp_frames)
+                gain = (1.0 - cos(M_PI * (double)from_start / (double)state->ramp_frames)) * 0.5;
+            else if (state->ramp_frames && from_end < state->ramp_frames)
+                gain = (1.0 - cos(M_PI * (double)from_end / (double)state->ramp_frames)) * 0.5;
+            else
+                gain = 1.0;
+        }
 
-        buf[i] = (int16_t)sample;
-
-        *phase += phase_inc;
-        if (*phase >= two_pi)
-            *phase -= two_pi;
+        buf[i] = gain ? (int16_t)(gain * amplitude * sin(state->phase)) : 0;
+        state->phase += phase_inc;
+        if (state->phase >= two_pi)
+            state->phase -= two_pi;
     }
+}
+
+static int wait_pcm(snd_pcm_t *pcm)
+{
+    int rc = snd_pcm_wait(pcm, 20);
+    return rc < 0 ? recover_pcm(pcm, rc, "wait") : 0;
 }
 
 static int pcm_write_all(snd_pcm_t *pcm,
@@ -997,7 +1106,8 @@ static int pcm_write_all(snd_pcm_t *pcm,
         n = snd_pcm_writei(pcm, buf + off, frames - off);
 
         if (n == -EAGAIN) {
-            snd_pcm_wait(pcm, 20);
+            if (wait_pcm(pcm) < 0)
+                return -1;
             continue;
         }
 
@@ -1009,7 +1119,8 @@ static int pcm_write_all(snd_pcm_t *pcm,
         }
 
         if (n == 0) {
-            snd_pcm_wait(pcm, 20);
+            if (wait_pcm(pcm) < 0)
+                return -1;
             continue;
         }
 
@@ -1019,29 +1130,17 @@ static int pcm_write_all(snd_pcm_t *pcm,
     return 0;
 }
 
-static int audio_loop(snd_pcm_t *pcm)
+static int audio_loop(snd_pcm_t *pcm, unsigned int actual_rate)
 {
     int16_t buf[AUDIO_PERIOD_FRAMES];
 
-    double phase = 0.0;
-    double env = 0.0;
-
-    const double phase_inc = 2.0 * M_PI * freq_hz / (double)AUDIO_RATE;
-
-    /*
-     * 3 ms ramp to avoid clicks.
-     */
-    const double env_step = 1.0 / ((double)AUDIO_RATE * 0.003);
+    audio_state_t state = {0};
+    state.gap_frames = ns_to_frames((int64_t)llround(1.2e9 / wpm), actual_rate);
 
     int rc = 0;
 
     while (keep_running()) {
-        generate_audio(buf,
-                       AUDIO_PERIOD_FRAMES,
-                       &phase,
-                       &env,
-                       phase_inc,
-                       env_step);
+        generate_audio(buf, AUDIO_PERIOD_FRAMES, &state, actual_rate);
 
         if (pcm_write_all(pcm, buf, AUDIO_PERIOD_FRAMES) < 0) {
             rc = -1;
@@ -1067,6 +1166,13 @@ int main(int argc, char **argv)
     int err;
     int field = 0;
     int audio_rc;
+    unsigned int actual_rate = 0;
+
+    if (argc == 2 &&
+        (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
+        usage(argv[0]);
+        return 0;
+    }
 
     if (argc < 2) {
         usage(argv[0]);
@@ -1146,7 +1252,7 @@ int main(int argc, char **argv)
             do_grab ? "EVIOCGRAB enabled" : "nograb",
             do_decode ? ", decode" : "");
 
-    pcm = open_audio();
+    pcm = open_audio(&actual_rate);
     if (!pcm) {
         restore_terminal();
         return 1;
@@ -1170,13 +1276,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    audio_rc = audio_loop(pcm);
+    audio_rc = audio_loop(pcm, actual_rate);
     if (audio_rc < 0)
         request_stop(1);
 
     request_stop(0);
-    ASTORE(key_on, 0);
-
     pthread_join(keyer_tid, NULL);
     pthread_join(evdev_tid, NULL);
 
