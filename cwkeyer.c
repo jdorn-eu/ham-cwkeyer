@@ -835,6 +835,36 @@ static void set_key_state(int code, int down)
     }
 }
 
+/*
+ * Apply one evdev event. `resync` is non-zero between SYN_DROPPED and the
+ * next SYN_REPORT, while the kernel's view of the device is unknown. Return
+ * non-zero when a SYN_REPORT closes a resync, so the caller can re-read the
+ * device state.
+ */
+static int evdev_handle_event(const struct input_event *ev, int *resync)
+{
+    if (*resync) {
+        if (ev->type == EV_SYN && ev->code == SYN_REPORT) {
+            *resync = 0;
+            return 1;
+        }
+        return 0;
+    }
+
+    if (ev->type == EV_SYN && ev->code == SYN_DROPPED) {
+        /* Event state is unreliable until the next report. */
+        clear_input_state();
+        *resync = 1;
+        return 0;
+    }
+
+    /* ev.value: 0 = release, 1 = press, 2 = autorepeat (ignored). */
+    if (ev->type == EV_KEY && (ev->value == 0 || ev->value == 1))
+        set_key_state((int)ev->code, ev->value);
+
+    return 0;
+}
+
 static void warn_if_key_not_supported(int fd, int key_code, const char *which)
 {
     unsigned long supported[NBITS(KEY_MAX + 1)] = {0};
@@ -947,35 +977,8 @@ static void *evdev_thread(void *arg)
                 ssize_t n = read(fd, &ev, sizeof(ev));
 
                 if (n == (ssize_t)sizeof(ev)) {
-                    if (resync) {
-                        if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
-                            initialize_paddle_state_from_device(fd);
-                            resync = 0;
-                        }
-                        continue;
-                    }
-
-                    if (ev.type == EV_SYN && ev.code == SYN_DROPPED) {
-                        /* Event state is unreliable until the next report. */
-                        ASTORE(dit_paddle, 0);
-                        ASTORE(dah_paddle, 0);
-                        ASTORE(dit_edge, 0);
-                        ASTORE(dah_edge, 0);
-                        resync = 1;
-                        continue;
-                    }
-
-                    if (ev.type == EV_KEY) {
-                        /*
-                         * ev.value:
-                         *   0 = release
-                         *   1 = press
-                         *   2 = autorepeat
-                         */
-                        if (ev.value == 0 || ev.value == 1)
-                            set_key_state((int)ev.code, ev.value);
-                    }
-
+                    if (evdev_handle_event(&ev, &resync))
+                        initialize_paddle_state_from_device(fd);
                     continue;
                 }
 
@@ -1098,6 +1101,57 @@ static char morse_decode(const char *s, size_t len)
     return '\0';
 }
 
+/*
+ * State for the optional decode display.
+ */
+typedef struct {
+    char sym[16];
+    size_t sym_len;
+    int64_t gap_start;    /* mono_ns() when the current idle gap began */
+    int printed_char;     /* at least one decoded character printed */
+    int space_emitted;    /* space already printed for this idle gap */
+} decode_state_t;
+
+/* Append one element to the symbol being keyed. */
+static void decode_add_symbol(decode_state_t *d, int send_dit)
+{
+    if (d->sym_len + 1 < sizeof(d->sym))
+        d->sym[d->sym_len++] = send_dit ? '.' : '-';
+}
+
+/*
+ * Called while the keyer is idle. After a character gap the accumulated
+ * symbol is printed (unknown symbols are dropped); after a word gap a single
+ * space is printed. `out` is normally stdout, but a stream is passed in so
+ * the logic can be tested.
+ */
+static void decode_idle(decode_state_t *d, int enable, int64_t now,
+                        int64_t char_gap_ns, int64_t word_gap_ns, FILE *out)
+{
+    if (!enable)
+        return;
+
+    if (d->sym_len && now - d->gap_start >= char_gap_ns) {
+        char ch = morse_decode(d->sym, d->sym_len);
+
+        /* Unknown symbols are dropped. */
+        if (ch != '\0') {
+            fputc(ch, out);
+            d->printed_char = 1;
+        }
+
+        fflush(out);
+        d->sym_len = 0;
+    }
+
+    if (d->gap_start > 0 && d->printed_char && !d->space_emitted &&
+        (now - d->gap_start) > word_gap_ns) {
+        fputc(' ', out);
+        fflush(out);
+        d->space_emitted = 1;
+    }
+}
+
 static int64_t tone_ramp_ns(int64_t dit_ns)
 {
     return dit_ns / 2 < 5000000LL ? dit_ns / 2 : 5000000LL;
@@ -1157,11 +1211,7 @@ static void *keyer_thread(void *arg)
     keyer.mode_b = do_mode_b;
     keyer.state = KY_IDLE;
 
-    char sym[16];
-    size_t sym_len = 0;
-    int64_t gap_start = 0;    /* mono_ns() when the current idle gap began */
-    int printed_char = 0;     /* at least one decoded character printed */
-    int space_emitted = 0;    /* space already printed for this idle gap */
+    decode_state_t dec = {0};
 
     while (keep_running()) {
         if (keyer.state == KY_IDLE) {
@@ -1169,36 +1219,8 @@ static void *keyer_thread(void *arg)
             sample_keyer_paddles(&keyer);
 
             if (keyer.state == KY_IDLE) {
-                /*
-                 * Idle: the symbol being keyed is complete. If the decode
-                 * display is active, print it.
-                 */
-                if (do_decode && sym_len &&
-                    mono_ns() - gap_start >= char_gap_ns) {
-                    char ch = morse_decode(sym, sym_len);
-
-                    /* Unknown symbols are dropped. */
-                    if (ch != '\0') {
-                        fputc(ch, stdout);
-                        printed_char = 1;
-                    }
-
-                    fflush(stdout);
-                    sym_len = 0;
-                }
-
-                /*
-                 * Decode display: an idle gap longer than seven dits (the
-                 * ITU word gap) between characters is a word gap; print a
-                 * single space for it.
-                 */
-                if (do_decode && gap_start > 0 &&
-                    printed_char && !space_emitted &&
-                    (mono_ns() - gap_start) > word_gap_ns) {
-                    fputc(' ', stdout);
-                    fflush(stdout);
-                    space_emitted = 1;
-                }
+                decode_idle(&dec, do_decode, mono_ns(),
+                            char_gap_ns, word_gap_ns, stdout);
 
                 /*
                  * Idle poll interval. Lower values reduce input-to-keyer
@@ -1221,14 +1243,14 @@ static void *keyer_thread(void *arg)
         watch_keyer_until_ns(mark_end, &keyer);
         keyer_core_step(&keyer);            /* end of mark: IN -> AFTER */
 
-        gap_start = mark_end;
-        space_emitted = 0;
+        dec.gap_start = mark_end;
+        dec.space_emitted = 0;
 
         watch_keyer_until_ns(mark_end + space_ns, &keyer);
         keyer_core_step(&keyer);            /* end of space: AFTER -> next */
 
-        if (do_decode && sym_len + 1 < sizeof(sym))
-            sym[sym_len++] = send_dit ? '.' : '-';
+        if (do_decode)
+            decode_add_symbol(&dec, send_dit);
     }
 
     return NULL;
