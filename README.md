@@ -34,13 +34,17 @@ The build is deliberately strict by default: `-Werror` plus a broad warning set 
 
 - `tests/test_keyer.c` — the iambic core (the N and A memory tests, the mode A/mode B `K`/`C` difference, held-paddle repeats, alternating squeezes), paddle debouncing (glitches rejected, bounce collapsed to one transition), evdev event parsing (press/release, autorepeat ignored, `SYN_DROPPED` resync), the decode display (character and word gaps, unknown symbols dropped), the PCM renderer (envelope, spacing across buffer boundaries, late marks, high-speed ramp), and a short run of the real `keyer_thread` to check mark sequencing.
 - `tests/test_signals.c` — `SIGPIPE` ignored, a stop signal stops the loops, terminal disable/restore is idempotent on a pty, and `SIGTSTP`/`SIGCONT` genuinely stop and resume.
+- `tests/test_audio.c` — the audio layer against ALSA's built-in `null` PCM (no sound server or hardware): `open_audio()` opens and negotiates a rate, `pcm_write_all()` writes generated periods, `audio_loop()` runs in a thread and stops cleanly, and a missing device and an at-Nyquist tone are both rejected.
+- `tests/test_evdev.c` — `evdev_thread()` fed through a FIFO standing in for the input device: press/release update the paddle state, the press edge is latched, and state is cleared on exit.
 - `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation.
+
+The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `parse_mode_env`, `lookup_key`) and a real `main()` startup/shutdown run.
 
 There is also an optional differential test against the real UnixCW libcw keyer: `make test-libcw` drives libcw's iambic graph and our mode B core with identical random paddle schedules and compares the element sequences (200k trials, no mismatches). It needs a built unixcw checkout; set `LIBCW_DIR` if it is not at `../unixcw-code`. It is not part of `make test` or CI because of that external dependency.
 
 A live paddle/listening check is still useful after changing timing, debouncing, or ALSA settings.
 
-`make coverage` (requires `gcovr`) runs the C suites with `--coverage` and writes an HTML report to `coverage/index.html` plus a Cobertura `coverage/coverage.xml`. Coverage is reported for `cwkeyer.c` only; the untested ALSA/evdev/main paths keep it around 44%, so treat it as a map of what to test next rather than a target.
+`make coverage` (requires `gcovr`) runs the C suites with `--coverage` and writes an HTML report to `coverage/index.html` plus a Cobertura `coverage/coverage.xml`. Coverage is reported for `cwkeyer.c` only and sits around 78%; the remainder is mostly error paths that are hard to trigger (thread-creation failure, ALSA recovery, evdev read errors) and the usage text, so treat it as a map of what to test next rather than a target.
 
 CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict GCC build, `make test`, `make analyze`, and `shellcheck`; a clang build and test; a sanitizer job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer; and a coverage job that uploads the report as an artifact.
 

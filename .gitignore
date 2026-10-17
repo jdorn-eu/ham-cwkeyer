@@ -100,3 +100,11 @@ zsdoc/data
 
 # Local Curtis 8044 reference material (not redistributed)
 curtis8044_docs/
+
+# Coverage / analysis / packaging artifacts
+coverage/
+*.gcda
+*.gcno
+*.gcov
+test_differential_libcw
+ham-cwkeyer-*.tar.gz

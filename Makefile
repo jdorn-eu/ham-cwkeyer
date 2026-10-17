@@ -37,6 +37,8 @@ endif
 CPPFLAGS += -DCWKEYER_VERSION='"$(VERSION)"'
 LDLIBS    = -lasound -lpthread -lm
 
+CTESTS = test_keyer test_signals test_audio test_evdev
+
 .PHONY: test analyze coverage test-libcw install uninstall dist clean
 
 cwkeyer: cwkeyer.c
@@ -44,10 +46,10 @@ cwkeyer: cwkeyer.c
 
 test:
 	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -o "$$tmp/test_keyer" tests/test_keyer.c $(LDLIBS) && \
-	"$$tmp/test_keyer" && \
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -o "$$tmp/test_signals" tests/test_signals.c $(LDLIBS) && \
-	"$$tmp/test_signals" && \
+	for t in $(CTESTS); do \
+	    $(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -o "$$tmp/$$t" tests/$$t.c $(LDLIBS) || exit 1; \
+	    "$$tmp/$$t" || exit 1; \
+	done; \
 	bash tests/test_mic_mix.sh
 
 # GCC's static analyzer; slower than a normal build, so kept separate.
@@ -73,12 +75,11 @@ test-libcw:
 coverage:
 	@rm -rf coverage
 	@mkdir -p coverage
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) --coverage -O0 -g -c tests/test_keyer.c -o coverage/test_keyer.o
-	$(CC) --coverage -o coverage/test_keyer coverage/test_keyer.o $(LDLIBS)
-	./coverage/test_keyer
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) --coverage -O0 -g -c tests/test_signals.c -o coverage/test_signals.o
-	$(CC) --coverage -o coverage/test_signals coverage/test_signals.o $(LDLIBS)
-	./coverage/test_signals
+	@for t in $(CTESTS); do \
+	    $(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) --coverage -O0 -g -c tests/$$t.c -o coverage/$$t.o || exit 1; \
+	    $(CC) --coverage -o coverage/$$t coverage/$$t.o $(LDLIBS) || exit 1; \
+	    ./coverage/$$t || exit 1; \
+	done
 	gcovr --root . --filter 'cwkeyer\.c' --txt --cobertura coverage/coverage.xml \
 	    --html-details coverage/index.html
 	@echo "coverage report: coverage/index.html"

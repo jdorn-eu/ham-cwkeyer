@@ -5,6 +5,8 @@ int cwkeyer_program_main(int argc, char **argv);
 #include "../cwkeyer.c"
 #undef main
 
+#include <sys/wait.h>
+
 static int check_code(char expected, const char *code)
 {
     char actual = morse_decode(code, strlen(code));
@@ -542,6 +544,242 @@ static int run_driver_tests(void)
     return failures;
 }
 
+/* ---------------- argument parsing and small helpers ---------------- */
+
+static const char *g_bad_arg;
+
+static void call_parse_wpm(void)
+{
+    parse_double_arg(g_bad_arg, "wpm", 1.0, 300.0);
+}
+
+static void call_lookup(void)
+{
+    lookup_key(g_bad_arg);
+}
+
+/* Fork and check that fn() exits with the expected status. */
+static int child_exits_with(int want, void (*fn)(void))
+{
+    pid_t pid = fork();
+
+    if (pid < 0)
+        return 0;
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        fn();
+        _exit(0);
+    }
+
+    int status;
+    if (waitpid(pid, &status, 0) != pid)
+        return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == want;
+}
+
+static int quiet_stderr(void)
+{
+    int saved = dup(STDERR_FILENO);
+    int devnull = open("/dev/null", O_WRONLY);
+    if (devnull >= 0) {
+        dup2(devnull, STDERR_FILENO);
+        close(devnull);
+    }
+    return saved;
+}
+
+static void unquiet_stderr(int saved)
+{
+    if (saved >= 0) {
+        dup2(saved, STDERR_FILENO);
+        close(saved);
+    }
+}
+
+static int nearly(double a, double b)
+{
+    return fabs(a - b) < 1e-9;
+}
+
+static int run_arg_tests(void)
+{
+    int failures = 0;
+    int saved;
+    unsigned long bits[NBITS(KEY_MAX + 1)];
+
+    /* Valid doubles. */
+    if (!nearly(parse_double_arg("25", "wpm", 1.0, 300.0), 25.0))
+        failures++;
+    if (!nearly(parse_double_arg("12.5", "wpm", 1.0, 300.0), 12.5))
+        failures++;
+    if (!nearly(parse_double_arg("1", "wpm", 1.0, 300.0), 1.0))
+        failures++;
+
+    /* Invalid doubles call exit(1). */
+    g_bad_arg = "0";
+    failures += !child_exits_with(1, call_parse_wpm);
+    g_bad_arg = "301";
+    failures += !child_exits_with(1, call_parse_wpm);
+    g_bad_arg = "abc";
+    failures += !child_exits_with(1, call_parse_wpm);
+    g_bad_arg = "inf";
+    failures += !child_exits_with(1, call_parse_wpm);
+    g_bad_arg = "";
+    failures += !child_exits_with(1, call_parse_wpm);
+
+    /* parse_uint_env: valid, out of range, invalid, and unset. */
+    setenv("CW_TEST_UINT", "25", 1);
+    if (parse_uint_env("CW_TEST_UINT", 5, 0, 50) != 25)
+        failures++;
+    setenv("CW_TEST_UINT", "999", 1);
+    saved = quiet_stderr();
+    if (parse_uint_env("CW_TEST_UINT", 5, 0, 50) != 5)
+        failures++;
+    unquiet_stderr(saved);
+    setenv("CW_TEST_UINT", "x", 1);
+    saved = quiet_stderr();
+    if (parse_uint_env("CW_TEST_UINT", 7, 0, 50) != 7)
+        failures++;
+    unquiet_stderr(saved);
+    unsetenv("CW_TEST_UINT");
+    if (parse_uint_env("CW_TEST_UINT", 3, 0, 50) != 3)
+        failures++;
+
+    /* parse_mode_env. */
+    do_mode_b = 1;
+    setenv("CW_KEYER_MODE", "a", 1);
+    parse_mode_env();
+    if (do_mode_b != 0)
+        failures++;
+    setenv("CW_KEYER_MODE", "B", 1);
+    parse_mode_env();
+    if (do_mode_b != 1)
+        failures++;
+    setenv("CW_KEYER_MODE", "mode_a", 1);
+    parse_mode_env();
+    if (do_mode_b != 0)
+        failures++;
+    setenv("CW_KEYER_MODE", "bogus", 1);
+    saved = quiet_stderr();
+    parse_mode_env();
+    unquiet_stderr(saved);
+    if (do_mode_b != 0)
+        failures++;
+    unsetenv("CW_KEYER_MODE");
+    do_mode_b = 1;
+
+    /* lookup_key: names, case, numeric, and unknown. */
+    if (lookup_key("COMMA") != KEY_COMMA)
+        failures++;
+    if (lookup_key("KEY_LEFTCTRL") != KEY_LEFTCTRL)
+        failures++;
+    if (lookup_key("leftctrl") != KEY_LEFTCTRL)
+        failures++;
+    if (lookup_key("42") != 42)
+        failures++;
+    if (lookup_key("0x2a") != 42)
+        failures++;
+    g_bad_arg = "NOT_A_KEY";
+    failures += !child_exits_with(1, call_lookup);
+
+    /* bit_is_set. */
+    memset(bits, 0, sizeof(bits));
+    bits[KEY_LEFTCTRL / BITS_PER_ULONG] |= 1UL << (KEY_LEFTCTRL % BITS_PER_ULONG);
+    if (!bit_is_set(KEY_LEFTCTRL, bits))
+        failures++;
+    if (bit_is_set(KEY_RIGHTCTRL, bits))
+        failures++;
+
+    /* ns_to_frames rounding. */
+    if (ns_to_frames(1000000000LL, 48000) != 48000)
+        failures++;
+    if (ns_to_frames(0, 48000) != 0)
+        failures++;
+
+    return failures;
+}
+
+/* ---------------- main() startup paths ---------------- */
+
+static int run_main_tests(void)
+{
+    int failures = 0;
+    char p0[] = "cwkeyer";
+    char p1[] = "--help";
+    char p2[] = "--version";
+    char p3[] = "cwkeyer_no_such_device";
+    char p4[] = "25";
+    char p5[] = "700";
+    char p6[] = "COMMA";
+    char p7[] = "DOT";
+    char p8[] = "nograb";
+    char p9[] = "decode";
+
+    char *help_argv[] = {p0, p1, NULL};
+    char *ver_argv[] = {p0, p2, NULL};
+    char *noargs_argv[] = {p0, NULL};
+    char *run_argv[] = {p0, p3, p4, p5, p6, p7, p8, p9, NULL};
+
+    int saved_out = dup(STDOUT_FILENO);
+    int saved_err = quiet_stderr();
+    int devnull = open("/dev/null", O_WRONLY);
+    if (devnull >= 0)
+        dup2(devnull, STDOUT_FILENO);
+
+    if (cwkeyer_program_main(2, help_argv) != 0)
+        failures++;
+    if (cwkeyer_program_main(2, ver_argv) != 0)
+        failures++;
+    if (cwkeyer_program_main(1, noargs_argv) != 1)
+        failures++;
+
+    /*
+     * Full startup with a non-existent input device. The evdev thread fails
+     * to open it and asks the program to stop, so main exercises argument
+     * parsing, audio setup (ALSA "null"), thread startup and joins, and
+     * returns the fatal status.
+     */
+    setenv("CW_ALSA_DEVICE", "null", 1);
+    ASTORE(running, 1);
+    stop_requested = 0;
+    ASTORE(fatal_error, 0);
+
+    int saved_in = dup(STDIN_FILENO);
+    int devnull_in = open("/dev/null", O_RDONLY);
+    if (devnull_in >= 0)
+        dup2(devnull_in, STDIN_FILENO);
+
+    int rc = cwkeyer_program_main(8, run_argv);
+
+    if (saved_in >= 0) {
+        dup2(saved_in, STDIN_FILENO);
+        close(saved_in);
+    }
+    if (devnull_in >= 0)
+        close(devnull_in);
+    if (rc != 1)
+        failures++;
+
+    /* Flush while still pointed at /dev/null: stdout is block-buffered when
+     * piped, so a late flush would otherwise leak to the real stdout. */
+    fflush(stdout);
+    fflush(stderr);
+
+    if (devnull >= 0) {
+        dup2(saved_out, STDOUT_FILENO);
+        close(devnull);
+    }
+    unquiet_stderr(saved_err);
+    if (saved_out >= 0)
+        close(saved_out);
+
+    return failures;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -615,7 +853,9 @@ int main(void)
     failures += run_debounce_tests();
     failures += run_evdev_tests();
     failures += run_decode_tests();
+    failures += run_arg_tests();
     failures += run_driver_tests();
+    failures += run_main_tests();
 
     if (failures)
         fprintf(stderr, "%d test(s) failed\n", failures);
