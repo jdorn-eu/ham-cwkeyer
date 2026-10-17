@@ -25,16 +25,17 @@
  *   CW_ALSA_DEVICE=pulse            ALSA PCM to open. Default: "pulse".
  *   CW_ALSA_LATENCY_US=20000        Requested ALSA latency in microseconds.
  *   PULSE_SINK=cw_out               If the device is "pulse" and PULSE_SINK is
- *                                   unset, it defaults to "cw_out" (created by
- *                                   cw-mic-mix.sh). Set it explicitly to a real
- *                                   sink if you haven't run that script.
+ *                                   unset or empty, it defaults to "cw_out"
+ *                                   (created by cw-mic-mix.sh). Set it
+ *                                   explicitly to a real sink if needed.
  *
- * For your mic-mixing setup, keeping ALSA device "default" is intentional:
+ * For the mic-mixing setup, the default ALSA PCM is "pulse" and the keyer
+ * routes it to cw_out when PULSE_SINK is unset or empty:
  *
- *   PULSE_SINK=cw_out ./cwkeyer /dev/input/eventX
+ *   ./cwkeyer /dev/input/eventX
  *
- * This works when your ALSA default device is routed through PulseAudio or
- * PipeWire-Pulse.
+ * Set PULSE_SINK explicitly to override that destination, or set
+ * CW_ALSA_DEVICE to select a different ALSA PCM.
  */
 
 #define _GNU_SOURCE
