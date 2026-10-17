@@ -1,5 +1,7 @@
 # ham-cwkeyer
 
+[![CI](https://github.com/jdorn-eu/ham-cwkeyer/actions/workflows/ci.yml/badge.svg)](https://github.com/jdorn-eu/ham-cwkeyer/actions/workflows/ci.yml)
+
 Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand adapter working as an iambic keyer in software.
 ## Design description
 - Reads evdev (/dev/input/eventX) input from adapter or alternatively keyboard input
@@ -33,6 +35,8 @@ The mark queue is bounded. If audio falls far enough behind to fill it, the prog
 - `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation.
 
 A live paddle/listening check is still useful after changing timing, debouncing, or ALSA settings.
+
+CI (`.github/workflows/ci.yml`) runs a `-Werror` build, `make test`, and `shellcheck` on every push and pull request.
 
 ## License
 
