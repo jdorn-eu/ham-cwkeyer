@@ -8,6 +8,9 @@ CFLAGS   ?= -O2
 WERROR   ?= -Werror
 
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 1.0.0)
+# git archive only contains HEAD, so a -dirty suffix would name a tarball that
+# does not actually contain the working-tree changes.  Strip it for dist.
+DIST_VERSION ?= $(patsubst %-dirty,%,$(VERSION))
 PREFIX   ?= /usr/local
 BINDIR   ?= $(PREFIX)/bin
 MANDIR   ?= $(PREFIX)/share/man/man1
@@ -89,16 +92,18 @@ install: cwkeyer
 	install -m 0755 cwkeyer "$(DESTDIR)$(BINDIR)/cwkeyer"
 	install -m 0755 cw-mic-mix.sh "$(DESTDIR)$(BINDIR)/cw-mic-mix"
 	install -m 0644 cwkeyer.1 "$(DESTDIR)$(MANDIR)/cwkeyer.1"
+	install -m 0644 cw-mic-mix.1 "$(DESTDIR)$(MANDIR)/cw-mic-mix.1"
 
 uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/cwkeyer" \
 	      "$(DESTDIR)$(BINDIR)/cw-mic-mix" \
-	      "$(DESTDIR)$(MANDIR)/cwkeyer.1"
+	      "$(DESTDIR)$(MANDIR)/cwkeyer.1" \
+	      "$(DESTDIR)$(MANDIR)/cw-mic-mix.1"
 
 dist:
-	git archive --prefix=ham-cwkeyer-$(VERSION)/ \
-	    -o ham-cwkeyer-$(VERSION).tar.gz HEAD
-	@echo "wrote ham-cwkeyer-$(VERSION).tar.gz"
+	git archive --prefix=ham-cwkeyer-$(DIST_VERSION)/ \
+	    -o ham-cwkeyer-$(DIST_VERSION).tar.gz HEAD
+	@echo "wrote ham-cwkeyer-$(DIST_VERSION).tar.gz"
 
 clean:
 	rm -f cwkeyer test_differential_libcw

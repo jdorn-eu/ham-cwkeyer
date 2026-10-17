@@ -11,9 +11,9 @@ Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand ad
 
 ### Keying and audio timing
 
-The evdev thread tracks paddle state, including short presses and recovery from dropped input events. The keyer thread runs a small state machine and watches the paddles through each mark and its following one-dit space, using monotonic deadlines for the nominal 1:3 dit/dah timing. With `decode` off, it does no Morse decoding or terminal output.
+The evdev thread tracks paddle state (including presses that land between keyer samples) and recovers from dropped input events. The keyer thread runs a small state machine and watches the paddles through each mark and its following one-dit space, using monotonic deadlines for the nominal 1:3 dit/dah timing. With `decode` off, it does no Morse decoding or terminal output.
 
-Paddle inputs are debounced the way the 8044's RC input filter does it: a level change is accepted only after it has been stable for the hold time (`CW_KEYER_DEBOUNCE_MS`, default 5 ms). Contact bounce and glitches shorter than that are discarded, so they cannot inject extra elements. A real press shorter than the hold time is discarded too; at the slowest intended speeds a real tap is far longer than 5 ms. Set it to 0 to disable debouncing, or raise it for a noisy paddle (the chip's 1M/0.01µF filter is roughly 10 ms).
+Paddle inputs are filtered with a digital approximation of the 8044's external RC network: the recommended 1 MΩ/0.01 µF network has a time constant of about 10 ms. The filter runs in the keyer's own time base, so contact bounce is smoothed and normally cannot inject extra elements. `CW_KEYER_DEBOUNCE_MS` sets the RC time constant (default 10 ms; 0 disables the filter). Lower it, for example to 5 ms, for a snappier response at high speed. As with the real RC network, a legitimate press shorter than the filter's threshold time may not be recognized; at high speeds use a shorter setting or 0.
 
 Both original Curtis keyer behaviours are implemented; `CW_KEYER_MODE` selects one:
 
@@ -32,15 +32,15 @@ Audio health is reported at exit: ALSA underruns are counted (and the first few 
 
 The build is deliberately strict by default: `-Werror` plus a broad warning set (including `-Wconversion`, `-Wsign-conversion`, `-Wshadow`, `-Wcast-qual`, and `-Wdouble-promotion`). Both GCC and clang are supported; the Makefile adapts the warning flags to the compiler (`make CC=clang`). Pass `make WERROR=` to build despite warnings on an unknown toolchain. `make analyze` runs GCC's `-fanalyzer`.
 
-`make test` builds and runs three hardware-independent suites; it does not touch your input device, audio routing, or sound server:
+`make test` builds and runs the hardware-independent suites below; it does not touch your input device, audio routing, or sound server:
 
-- `tests/test_keyer.c` — the iambic core (the N and A memory tests, the mode A/mode B `K`/`C` difference, held-paddle repeats, alternating squeezes), paddle debouncing (glitches rejected, bounce collapsed to one transition), evdev event parsing (press/release, autorepeat ignored, `SYN_DROPPED` resync), the decode display (character and word gaps, unknown symbols dropped), the PCM renderer (envelope, spacing across buffer boundaries, late marks, high-speed ramp), and a short run of the real `keyer_thread` to check mark sequencing.
-- `tests/test_signals.c` — `SIGPIPE` ignored, a stop signal stops the loops, terminal disable/restore is idempotent on a pty, and `SIGTSTP`/`SIGCONT` genuinely stop and resume.
+- `tests/test_keyer.c` — the iambic core (the N and A memory tests, the mode A/mode B `K`/`C` difference, held-paddle repeats, alternating squeezes), the RC paddle filter (glitches rejected, bounce smoothed, threshold delay), evdev event parsing (press/release, autorepeat ignored, `SYN_DROPPED` resync), the decode display (character and word gaps, unknown symbols dropped), the PCM renderer (envelope, spacing across buffer boundaries, late marks, high-speed ramp), and a short run of the real `keyer_thread` to check mark sequencing.
+- `tests/test_signals.c` — `SIGPIPE` ignored, a stop signal stops the loops, terminal disable/restore is idempotent on a pty, queued tty input is discarded on restore, a spurious `SIGCONT` does not re-disable echo, and `SIGTSTP`/`SIGCONT` genuinely stop and resume.
 - `tests/test_audio.c` — the audio layer against ALSA's built-in `null` PCM (no sound server or hardware): `open_audio()` opens and negotiates a rate, `pcm_write_all()` writes generated periods, `audio_loop()` runs in a thread and stops cleanly, and a missing device and an at-Nyquist tone are both rejected.
 - `tests/test_evdev.c` — `evdev_thread()` fed through a FIFO standing in for the input device: press/release update the paddle state, the press edge is latched, and state is cleared on exit.
 - `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation.
 
-The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `parse_mode_env`, `lookup_key`) and a real `main()` startup/shutdown run.
+The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `parse_mode_env`, `lookup_key`) and a real `main()` startup/failure/shutdown path.
 
 There is also an optional differential test against the real UnixCW libcw keyer: `make test-libcw` drives libcw's iambic graph and our mode B core with identical random paddle schedules and compares the element sequences (200k trials, no mismatches). It needs a built unixcw checkout; set `LIBCW_DIR` if it is not at `../unixcw-code`. It is not part of `make test` or CI because of that external dependency.
 
@@ -60,7 +60,7 @@ Mode behaviour follows the primary sources: the Curtis Electro Devices *8044 Ser
 ```
 sudo dnf install gcc alsa-lib-devel
 make        # strict build (-Werror plus a broad warning set)
-make test    # iambic, debounce, evdev, decode, driver, signal, and script checks
+make test    # iambic, RC filter, evdev, decode, driver, signal, and script checks
 make analyze # GCC -fanalyzer
 make coverage # gcovr HTML/XML report in coverage/
 ```
@@ -73,7 +73,7 @@ make install PREFIX=/usr            # or another prefix
 make install DESTDIR=/tmp/stage PREFIX=/usr   # for packagers
 ```
 
-This installs `cwkeyer`, the `cw-mic-mix` helper, and the `cwkeyer(1)` man page. `make uninstall` removes them. `make dist` produces a `ham-cwkeyer-<version>.tar.gz` from the current commit; the version comes from `git describe`, or override it with `make VERSION=1.2.3`. Run `cwkeyer --version` to see the version a binary was built with.
+This installs `cwkeyer`, the `cw-mic-mix` helper, and the `cwkeyer(1)` and `cw-mic-mix(1)` man pages. `make uninstall` removes them. `make dist` produces a `ham-cwkeyer-<version>.tar.gz` from the current commit; the version comes from `git describe` (a `-dirty` suffix is stripped for the tarball), or override it with `make VERSION=1.2.3`. Run `cwkeyer --version` to see the version a binary was built with.
 
 In order for your user session to be able to access the adapter input, set proper udev rules:
 ```
@@ -98,7 +98,7 @@ First check for the correct device: `sudo libinput list-devices` or `sudo evtest
 ```
 The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). Running `./cwkeyer` with no arguments or `./cwkeyer --help` lists the known key names; raw evdev key codes work too.
 
-While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty). Ctrl+C, SIGTERM, SIGHUP, and SIGQUIT stop it cleanly and restore the terminal and the evdev grab. Ctrl+Z suspends it properly: the terminal and grab are released before stopping and re-established on resume, so the shell stays usable while it is suspended. Fatal crashes also restore the terminal on a best-effort basis before re-raising the signal.
+While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty). Terminal input queued while the keyer runs is discarded on exit, so keystrokes do not reappear at the shell prompt. Ctrl+C, SIGTERM, SIGHUP, and SIGQUIT stop it cleanly and restore the terminal and the evdev grab. Ctrl+Z suspends it properly: the terminal and grab are released before stopping and re-established on resume, so the shell stays usable while it is suspended. Fatal crashes also restore the terminal on a best-effort basis before re-raising the signal.
 
 With `decode`, each keyed symbol is printed as text as you key, without newlines; unknown symbols are ignored. Pausing for more than seven dits between characters (the ITU word gap) prints a single space, so word breaks you key by hand appear as spaces. Decoder output is written synchronously by the keyer thread, so a blocked stdout consumer can delay paddle processing; keep the output destination draining when using `decode`.
 
@@ -106,7 +106,7 @@ With `decode`, each keyed symbol is printed as text as you key, without newlines
 - `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is set to `cw_out` by the keyer.
 - `CW_ALSA_LATENCY_US` Requested ALSA latency in microseconds. Default: `20000` (20 ms). ALSA may negotiate a different buffer/period; the achieved values are printed at startup. Smaller buffers may reduce latency but increase underrun risk.
 - `CW_KEYER_MODE` Curtis iambic mode, `a` or `b` (case-insensitive; also accepts `mode_a`/`mode_b`). Default: `b`. The mode is printed at startup.
-- `CW_KEYER_DEBOUNCE_MS` Paddle debounce hold time in milliseconds, `0`–`50`. Default: `5`; `0` disables debouncing. Any level change shorter than the hold time is treated as contact bounce and discarded.
+- `CW_KEYER_DEBOUNCE_MS` Paddle RC filter time constant in milliseconds, `0`–`50`. Default: `10`; `0` disables the filter. The 8044's recommended 1 MΩ/0.01 µF network is about 10 ms. A press shorter than the filter's threshold time may not be recognized; lower the value for high-speed sending.
 - `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, it defaults to `cw_out`, the combined sink created by `cw-mic-mix.sh`. If you haven't run that script, set it explicitly to a real sink, e.g. `PULSE_SINK=$(pactl get-default-sink)`.
 
 ## Combine with mic input

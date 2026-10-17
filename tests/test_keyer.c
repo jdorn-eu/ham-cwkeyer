@@ -184,36 +184,49 @@ static int run_iambic_tests(void)
 }
 
 /*
- * Debouncing: a level change is accepted only after it has been stable for
- * the hold time, so contact bounce and short glitches never reach the core.
+ * RC filtering: the lever level is smoothed with the same first-order filter
+ * as the 8044's external network, so short glitches and contact bounce never
+ * reach the core as a full logic transition.
  */
 static int run_debounce_tests(void)
 {
     int failures = 0;
-    const int64_t hold = 5000000LL; /* 5 ms */
+    const int64_t tau = 5000000LL; /* 5 ms */
     debounce_t d;
     int transitions;
     int prev;
     int64_t t;
 
-    /* A glitch shorter than the hold time is rejected. */
+    /* A glitch shorter than the filter time is rejected. */
     d = (debounce_t){0};
-    debounce_update(&d, 1, 0, hold);
-    debounce_update(&d, 0, 1000000, hold);
-    if (d.stable != 0) {
+    debounce_update(&d, 1, 0, tau);
+    debounce_update(&d, 0, 500000, tau);
+    debounce_update(&d, 0, 2000000, tau);
+    if (d.state != 0) {
         fprintf(stderr, "debounce: short glitch was accepted\n");
         failures++;
     }
 
-    /* A held press is accepted only once the hold time has elapsed. */
+    /* A held press must charge the filter past its threshold. */
     d = (debounce_t){0};
-    debounce_update(&d, 1, 0, hold);
-    if (debounce_update(&d, 1, hold - 1, hold) != 0) {
+    if (debounce_update(&d, 1, 0, tau) != 0) {
+        fprintf(stderr, "debounce: press accepted at the first sample\n");
+        failures++;
+    }
+    if (debounce_update(&d, 1, 3000000, tau) != 0) {
         fprintf(stderr, "debounce: press accepted too early\n");
         failures++;
     }
-    if (debounce_update(&d, 1, hold, hold) != 1) {
-        fprintf(stderr, "debounce: press not accepted after hold\n");
+    if (debounce_update(&d, 1, 5000000, tau) != 1) {
+        fprintf(stderr, "debounce: press not accepted after the RC delay\n");
+        failures++;
+    }
+    if (debounce_update(&d, 0, 6000000, tau) != 1) {
+        fprintf(stderr, "debounce: release accepted too early\n");
+        failures++;
+    }
+    if (debounce_update(&d, 0, 8000000, tau) != 0) {
+        fprintf(stderr, "debounce: release not accepted after the RC delay\n");
         failures++;
     }
 
@@ -222,12 +235,12 @@ static int run_debounce_tests(void)
     transitions = 0;
     prev = 0;
     t = 0;
-    for (int i = 0; i < 12; i++, t += 250000) {
-        int st = debounce_update(&d, (i % 2 == 0) ? 1 : 0, t, hold);
+    for (int i = 0; i < 10; i++, t += 500000) {
+        int st = debounce_update(&d, (i % 2 == 0) ? 1 : 0, t, tau);
         if (st != prev) { transitions++; prev = st; }
     }
-    for (int i = 0; i < 40; i++, t += 250000) {
-        int st = debounce_update(&d, 1, t, hold);
+    for (int i = 0; i < 20; i++, t += 500000) {
+        int st = debounce_update(&d, 1, t, tau);
         if (st != prev) { transitions++; prev = st; }
     }
     if (transitions != 1 || prev != 1) {
@@ -236,16 +249,18 @@ static int run_debounce_tests(void)
     }
 
     /* A burst of bounce on open also yields exactly one transition. */
-    d = (debounce_t){.stable = 1, .candidate = 1, .candidate_ns = 0};
+    d = (debounce_t){0};
+    debounce_update(&d, 1, 0, tau);
+    debounce_update(&d, 1, tau * 3, tau);
     transitions = 0;
-    prev = 1;
-    t = 0;
-    for (int i = 0; i < 12; i++, t += 250000) {
-        int st = debounce_update(&d, (i % 2 == 0) ? 0 : 1, t, hold);
+    prev = d.state;
+    t = tau * 3;
+    for (int i = 0; i < 10; i++, t += 500000) {
+        int st = debounce_update(&d, (i % 2 == 0) ? 0 : 1, t, tau);
         if (st != prev) { transitions++; prev = st; }
     }
-    for (int i = 0; i < 40; i++, t += 250000) {
-        int st = debounce_update(&d, 0, t, hold);
+    for (int i = 0; i < 20; i++, t += 500000) {
+        int st = debounce_update(&d, 0, t, tau);
         if (st != prev) { transitions++; prev = st; }
     }
     if (transitions != 1 || prev != 0) {
@@ -253,10 +268,14 @@ static int run_debounce_tests(void)
         failures++;
     }
 
-    /* Hold 0 disables debouncing. */
+    /* Time constant 0 disables filtering. */
     d = (debounce_t){0};
     if (debounce_update(&d, 1, 0, 0) != 1) {
-        fprintf(stderr, "debounce: hold 0 did not pass the level through\n");
+        fprintf(stderr, "debounce: disabled filter did not pass a press\n");
+        failures++;
+    }
+    if (debounce_update(&d, 0, 1, 0) != 0) {
+        fprintf(stderr, "debounce: disabled filter did not pass a release\n");
         failures++;
     }
 
@@ -264,13 +283,13 @@ static int run_debounce_tests(void)
      * Through the sample path: a glitch must not start an element, and a
      * held press must start exactly one.
      */
-    debounce_ns = hold;
+    debounce_ns = tau;
 
     keyer_t k = {0};
     k.mode_b = 1;
     keyer_sample(&k, 1, 0, 0);
     keyer_sample(&k, 0, 0, 1000000);
-    keyer_sample(&k, 0, 0, hold * 2);
+    keyer_sample(&k, 0, 0, 2000000);
     if (keyer_symbol(&k) != -1 || k.state != KY_IDLE) {
         fprintf(stderr, "debounce: glitch started an element\n");
         failures++;
@@ -279,12 +298,17 @@ static int run_debounce_tests(void)
     k = (keyer_t){0};
     k.mode_b = 1;
     keyer_sample(&k, 1, 0, 0);
-    keyer_sample(&k, 1, 0, hold);
+    keyer_sample(&k, 1, 0, 3000000);
+    if (keyer_symbol(&k) != -1) {
+        fprintf(stderr, "debounce: held press started too early\n");
+        failures++;
+    }
+    keyer_sample(&k, 1, 0, 6000000);
     if (keyer_symbol(&k) != 1) {
         fprintf(stderr, "debounce: held press did not start a dit\n");
         failures++;
     }
-    keyer_sample(&k, 1, 0, hold + 1000000);
+    keyer_sample(&k, 1, 0, 7000000);
     if (keyer_symbol(&k) != 1 || k.state != KY_IN_DOT) {
         fprintf(stderr, "debounce: held press started a second element\n");
         failures++;

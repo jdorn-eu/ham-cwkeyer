@@ -26,7 +26,7 @@
  *   CW_ALSA_DEVICE=pulse            ALSA PCM to open. Default: "pulse".
  *   CW_ALSA_LATENCY_US=20000        Requested ALSA latency in microseconds.
  *   CW_KEYER_MODE=b                 Curtis iambic mode "a" or "b".
- *   CW_KEYER_DEBOUNCE_MS=5          Paddle debounce hold time, 0..50 ms.
+ *   CW_KEYER_DEBOUNCE_MS=10         Paddle RC filter time constant, 0..50 ms.
  *   PULSE_SINK=cw_out               If the device is "pulse" and PULSE_SINK is
  *                                   unset or empty, it defaults to "cw_out"
  *                                   (created by cw-mic-mix.sh). Set it
@@ -90,9 +90,12 @@ static int do_grab = 1;
 static int do_decode = 0;
 static int do_mode_b = 1;   /* Curtis 8044 mode B is the default */
 
-/* Paddle debounce hold time; 0 disables debouncing. */
-static unsigned int debounce_ms = 5;
-static int64_t debounce_ns = 5000000LL;
+/*
+ * Paddle RC filter time constant.  This models the 8044's external 1M/0.01uF
+ * input network, which is roughly 10 ms; 0 disables the filter.
+ */
+static unsigned int debounce_ms = 10;
+static int64_t debounce_ns = 10000000LL;
 
 static unsigned int alsa_latency_us = 20000;
 
@@ -138,6 +141,13 @@ static volatile sig_atomic_t stop_requested = 0;
 static volatile sig_atomic_t evdev_fd = -1;
 static volatile sig_atomic_t evdev_grabbed = 0;
 
+/* Set by the SIGTSTP handler; SIGCONT only restores our state after that. */
+static volatile sig_atomic_t suspended = 0;
+
+/* Set before the final terminal restore so a late SIGCONT cannot re-disable
+ * echo while the program is shutting down. */
+static volatile sig_atomic_t shutting_down = 0;
+
 /* Defined with the terminal code below; the signal handlers call them. */
 static void disable_terminal_echo(void);
 static void restore_terminal(void);
@@ -160,7 +170,7 @@ static void request_stop(int fatal)
 
 /*
  * The signal handlers below do the minimum work that cannot be deferred:
- * kill() is async-signal-safe, and tcsetattr()/ioctl() are single syscalls.
+ * kill(), tcsetattr(), tcflush(), and ioctl() are single syscalls.
  * They deliberately avoid stdio, malloc, and anything that can take a lock.
  */
 static void release_evdev_grab(void)
@@ -202,6 +212,7 @@ static void handle_tstp(int sig)
 {
     (void)sig;
 
+    suspended = 1;
     release_evdev_grab();
     restore_terminal();
 
@@ -209,13 +220,22 @@ static void handle_tstp(int sig)
 }
 
 /*
- * SIGCONT arrives after SIGSTOP, including a SIGSTOP sent directly by another
- * process (which bypasses the SIGTSTP handler entirely). Re-assert our
- * terminal mode and grab so the keyer keeps working.
+ * Only re-establish the terminal and grab if we released them in our own
+ * SIGTSTP handler.  A SIGSTOP sent directly by another process leaves both in
+ * place, so its SIGCONT must not disable echo again (that would also break a
+ * concurrent shutdown).
  */
 static void handle_cont(int sig)
 {
     (void)sig;
+
+    if (!suspended)
+        return;
+
+    suspended = 0;
+
+    if (shutting_down)
+        return;
 
     disable_terminal_echo();
     acquire_evdev_grab();
@@ -255,6 +275,12 @@ static int set_signal_handler(int sig, void (*handler)(int))
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handler;
     sigemptyset(&sa.sa_mask);
+
+    /* A stop/continue pair must not interrupt another handler halfway through
+     * releasing or restoring the terminal and grab.  Blocking them in every
+     * handler keeps the state transitions atomic with respect to Ctrl+Z. */
+    (void)sigaddset(&sa.sa_mask, SIGTSTP);
+    (void)sigaddset(&sa.sa_mask, SIGCONT);
 
     /*
      * Deliberately no SA_RESTART: blocking poll()/ALSA/nanosleep calls should
@@ -336,7 +362,7 @@ static void usage(const char *prog)
         "  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
         "  CW_ALSA_LATENCY_US=20000   Requested ALSA latency in us\n"
         "  CW_KEYER_MODE=b            Curtis iambic mode, a or b\n"
-        "  CW_KEYER_DEBOUNCE_MS=5     Paddle debounce hold time, 0..50 ms\n"
+        "  CW_KEYER_DEBOUNCE_MS=10    Paddle RC filter time constant, 0..50 ms\n"
         "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
         "                             unset, it defaults to cw_out (created by\n"
         "                             cw-mic-mix.sh)\n",
@@ -567,14 +593,18 @@ typedef enum {
 } keyer_state_t;
 
 /*
- * Contact debouncing. A lever transition is accepted only after the new
- * level has been stable for the hold time; anything shorter is treated as
- * contact bounce, the same job the 8044's RC input filter does.
+ * Contact filtering.  The 8044 uses an external RC low-pass on each paddle
+ * input; the recommended 1M/0.01uF network has a time constant of about
+ * 10 ms.  The same idea is modelled here with a first-order filter on the
+ * sampled lever level, followed by a small Schmitt-trigger hysteresis.  A
+ * pulse shorter than the threshold time is ignored, just as it would not
+ * charge the real capacitor past the chip's input threshold.
  */
 typedef struct {
-    int stable;
-    int candidate;
-    int64_t candidate_ns;
+    double level;       /* filtered lever level, 0.0 .. 1.0 */
+    int state;          /* debounced logic level */
+    int64_t last_ns;    /* time of the previous update */
+    int initialized;
 } debounce_t;
 
 typedef struct {
@@ -594,7 +624,7 @@ typedef struct {
     int dot_mem;
     int dash_mem;
 
-    /* Input debouncing. */
+    /* Input RC filtering. */
     debounce_t dit_debounce;
     debounce_t dah_debounce;
 } keyer_t;
@@ -731,40 +761,56 @@ static void keyer_core_paddles(keyer_t *keyer, int dot_down, int dash_down)
 }
 
 /*
- * Accept a lever transition only once the new level has been stable for the
- * hold time. Hold 0 disables debouncing.
+ * Update one paddle's RC filter.  `tau_ns` is the time constant; 0 disables
+ * filtering.  The threshold is 0.5 with a small amount of hysteresis so a
+ * noisy level near the threshold cannot chatter.
  */
-static int debounce_update(debounce_t *d, int raw, int64_t now, int64_t hold_ns)
+static int debounce_update(debounce_t *d, int raw, int64_t now, int64_t tau_ns)
 {
+    double target;
+    double alpha;
+    int64_t dt;
+
     raw = !!raw;
 
-    if (raw == d->stable) {
-        d->candidate = raw;
-        d->candidate_ns = now;
-        return d->stable;
+    if (tau_ns <= 0) {
+        d->level = raw ? 1.0 : 0.0;
+        d->state = raw;
+        d->last_ns = now;
+        d->initialized = 1;
+        return d->state;
     }
 
-    if (hold_ns <= 0) {
-        d->stable = raw;
-        d->candidate = raw;
-        d->candidate_ns = now;
-        return d->stable;
+    if (!d->initialized) {
+        /* The real capacitor starts discharged, so a lever already held at
+         * startup takes the normal filter delay to register. */
+        d->level = 0.0;
+        d->state = 0;
+        d->last_ns = now;
+        d->initialized = 1;
     }
 
-    if (raw != d->candidate) {
-        d->candidate = raw;
-        d->candidate_ns = now;
-    } else if (now - d->candidate_ns >= hold_ns) {
-        d->stable = raw;
-    }
+    dt = now - d->last_ns;
+    if (dt < 0)
+        dt = 0;
+    d->last_ns = now;
 
-    return d->stable;
+    target = raw ? 1.0 : 0.0;
+    alpha = 1.0 - exp(-(double)dt / (double)tau_ns);
+    d->level += (target - d->level) * alpha;
+
+    if (d->level >= 0.55)
+        d->state = 1;
+    else if (d->level <= 0.45)
+        d->state = 0;
+
+    return d->state;
 }
 
 /*
- * Feed one debounced sample to the keyer core. Debouncing happens here, in
- * the keyer's own time base, so a bounce shorter than the hold time never
- * reaches the core.
+ * Feed one filtered sample to the keyer core. The RC filter runs in the
+ * keyer's own time base, so short bounce is smoothed before it can reach the
+ * core.
  */
 static void keyer_sample(keyer_t *keyer, int dit_raw, int dah_raw, int64_t now)
 {
@@ -775,8 +821,11 @@ static void keyer_sample(keyer_t *keyer, int dit_raw, int dah_raw, int64_t now)
 }
 
 /*
- * Read the live paddle state plus any latched edges, debounce it, and feed
- * it to the keyer core.
+ * Read the live paddle state plus any latched edges, filter it, and feed it
+ * to the keyer core. The edge latches preserve a press that lands between
+ * keyer samples when filtering is disabled; with the RC filter enabled, a
+ * pulse that short is normally filtered out, just as the chip would ignore
+ * it.
  */
 static void sample_keyer_paddles(keyer_t *keyer)
 {
@@ -1063,10 +1112,23 @@ static void disable_terminal_echo(void)
 
     saved_termios = t;
     t.c_lflag &= ~(tcflag_t)(ECHO | ICANON);
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &t) < 0)
-        return;
 
+    /* Mark the state before applying it.  If SIGTSTP/SIGCONT arrives in the
+     * middle of this sequence, the handler must know that saved_termios is
+     * the original state, not the already-disabled one. */
     termios_modified = 1;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &t) < 0) {
+        /* Keep the flag set: saved_termios is what must be restored, and a
+         * partial or interrupted change still needs undoing. */
+        return;
+    }
+    /* Re-assert the state in case a handler restored it while tcsetattr()
+     * was in progress. */
+    termios_modified = 1;
+
+    /* The keyer never reads stdin, so anything typed while echo/canonical
+     * were off must not be replayed to the shell after we exit. */
+    (void)tcflush(STDIN_FILENO, TCIFLUSH);
 }
 
 static void restore_terminal(void)
@@ -1074,7 +1136,10 @@ static void restore_terminal(void)
     if (!termios_modified)
         return;
 
-    tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+    /* Drop keystrokes that reached the tty while the keyer was running. */
+    (void)tcflush(STDIN_FILENO, TCIFLUSH);
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios) < 0)
+        return; /* keep termios_modified so a later call can retry */
     termios_modified = 0;
 }
 
@@ -1666,7 +1731,7 @@ int main(int argc, char **argv)
                                      20000,
                                      1000,
                                      100000);
-    debounce_ms = parse_uint_env("CW_KEYER_DEBOUNCE_MS", 5, 0, 50);
+    debounce_ms = parse_uint_env("CW_KEYER_DEBOUNCE_MS", 10, 0, 50);
     debounce_ns = (int64_t)debounce_ms * 1000000LL;
     parse_mode_env();
 
@@ -1682,7 +1747,7 @@ int main(int argc, char **argv)
 
     fprintf(stderr,
             "CW keyer: %.2f WPM, %.2f Hz, dit code %d, dah code %d, %s, "
-            "Curtis mode %c, debounce %u ms%s\n",
+            "Curtis mode %c, RC filter %u ms%s\n",
             wpm,
             freq_hz,
             dit_code,
@@ -1694,6 +1759,7 @@ int main(int argc, char **argv)
 
     pcm = open_audio(&actual_rate);
     if (!pcm) {
+        shutting_down = 1;
         restore_terminal();
         return 1;
     }
@@ -1701,6 +1767,7 @@ int main(int argc, char **argv)
     err = pthread_create(&evdev_tid, NULL, evdev_thread, argv[1]);
     if (err != 0) {
         fprintf(stderr, "pthread_create(evdev): %s\n", strerror(err));
+        shutting_down = 1;
         restore_terminal();
         snd_pcm_close(pcm);
         return 1;
@@ -1710,6 +1777,7 @@ int main(int argc, char **argv)
     if (err != 0) {
         fprintf(stderr, "pthread_create(keyer): %s\n", strerror(err));
         request_stop(1);
+        shutting_down = 1;
         restore_terminal();
         pthread_join(evdev_tid, NULL);
         snd_pcm_close(pcm);
@@ -1725,6 +1793,7 @@ int main(int argc, char **argv)
     pthread_join(evdev_tid, NULL);
 
     snd_pcm_close(pcm);
+    shutting_down = 1;
     restore_terminal();
 
     /* Only mention the audio health if something actually went wrong. */

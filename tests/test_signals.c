@@ -69,6 +69,14 @@ int main(void)
     if (after.c_lflag & ECHO)
         return fail("ECHO still enabled after disable");
 
+    /* Input queued while the keyer owns the terminal must be discarded. */
+    const char queued[] = "x\n";
+    if (write(mfd, queued, sizeof queued - 1) !=
+        (ssize_t)(sizeof queued - 1))
+        return fail("write pty master");
+    struct timespec settle = {0, 10000000}; /* 10 ms */
+    nanosleep(&settle, NULL);
+
     restore_terminal();
     if (termios_modified)
         return fail("termios_modified not cleared");
@@ -78,6 +86,25 @@ int main(void)
         return fail("ECHO not restored");
     if (after.c_lflag != before.c_lflag)
         return fail("c_lflag differs from original after restore");
+
+    int pty_flags = fcntl(sfd, F_GETFL);
+    if (pty_flags < 0 || fcntl(sfd, F_SETFL, pty_flags | O_NONBLOCK) < 0)
+        return fail("set pty nonblocking");
+    char queued_input[8];
+    ssize_t queued_len = read(sfd, queued_input, sizeof queued_input);
+    if (queued_len > 0)
+        failures += fail("tty input survived restore_terminal");
+    else if (queued_len < 0 && errno != EAGAIN)
+        failures += fail("read pty slave after restore");
+
+    /* A SIGCONT that did not follow our SIGTSTP must not change the tty. */
+    raise(SIGCONT);
+    if (termios_modified)
+        failures += fail("spurious SIGCONT re-enabled terminal changes");
+    if (tcgetattr(STDIN_FILENO, &after) != 0)
+        return fail("tcgetattr after SIGCONT");
+    if (!(after.c_lflag & ECHO))
+        failures += fail("spurious SIGCONT disabled echo");
 
     /* A full second cycle must restore the exact original flags. */
     disable_terminal_echo();

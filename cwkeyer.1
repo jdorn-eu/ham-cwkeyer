@@ -21,11 +21,11 @@ cwkeyer \- low-latency iambic CW sidetone keyer
 .B cwkeyer
 reads an evdev keyboard-emulating paddle adapter and generates an ALSA
 sidetone. It implements the Curtis 8044 iambic keyer, with selectable mode
-A or B and dot/dash paddle memory, and then decodes to text.
+A or B and dot/dash paddle memory, and can optionally decode the keyed text.
 .PP
-The paddle inputs are debounced the way the 8044's RC input filter does it:
-a level change is accepted only after it has been stable for the debounce
-hold time.
+The paddle inputs are filtered with a digital approximation of the 8044's
+external RC network. The recommended 1 M\(*W/0.01 \(*mF network has a time
+constant of about 10 ms.
 .SH ARGUMENTS
 .TP
 .I /dev/input/eventX
@@ -95,9 +95,9 @@ and one extra element is keyed; in mode A it stops at the element in
 progress.
 .TP
 .B CW_KEYER_DEBOUNCE_MS
-Paddle debounce hold time in milliseconds, 0\(en50 (default 5). Any level
-change shorter than this is treated as contact bounce and discarded. Set to
-0 to disable debouncing.
+Paddle RC filter time constant in milliseconds, 0\(en50 (default 10). The
+8044's recommended 1 M\(*W/0.01 \(*mF network is about 10 ms. Set to 0 to
+disable the filter; a shorter value gives a snappier response at high speed.
 .TP
 .B PULSE_SINK
 PulseAudio/PipeWire sink for the sidetone. If

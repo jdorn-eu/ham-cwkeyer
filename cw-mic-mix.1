@@ -1,0 +1,79 @@
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.TH CW-MIC-MIX 1 "2026" "ham-cwkeyer" "User Commands"
+.SH NAME
+cw-mic-mix \- set up a PulseAudio/PipeWire microphone mix for cwkeyer
+.SH SYNOPSIS
+.B cw-mic-mix
+.RI [ mic_source
+.RI [ out_sink ]]
+.br
+.B cw-mic-mix
+.B \-\-unload
+.SH DESCRIPTION
+.B cw-mic-mix
+creates a virtual microphone that contains your real microphone plus the CW
+sidetone produced by
+.BR cwkeyer (1).
+Applications such as Discord, Mumble, or Audacity can then use the monitor of
+the
+.B CW_Mic_Mix
+null sink as their input device.
+.PP
+The script creates three PulseAudio/PipeWire modules:
+.BR module-null-sink " (cw_mic_mix),"
+.BR module-loopback " (the real microphone into cw_mic_mix),"
+and
+.BR module-combine-sink " (cw_out,"
+which sends the keyer tone to both the mix and your headphones).
+The keyer sends its tone to
+.B cw_out
+by default when
+.B CW_ALSA_DEVICE
+is
+.BR pulse .
+.PP
+Re-running the script is safe: modules left over from a previous run are
+unloaded first. If setup fails or is interrupted, modules created by that
+attempt are rolled back.
+.SH ARGUMENTS
+.TP
+.I mic_source
+PulseAudio/PipeWire source name for the real microphone. Defaults to the
+system default source. Use
+.B "pactl list short sources"
+to list source names.
+.TP
+.I out_sink
+PulseAudio/PipeWire sink name for headphones or speakers. Defaults to the
+system default sink. Use
+.B "pactl list short sinks"
+to list sink names.
+.TP
+.B \-\-unload
+Remove the CW mix modules and exit.
+.SH ENVIRONMENT
+.TP
+.B RATE
+Sample rate for the null and combine sinks, 8000\(en192000 Hz (default
+48000).
+.TP
+.B CHANNELS
+Channel count for the null and combine sinks, 1\(en8 (default 2).
+.TP
+.B LOOP_LATENCY_MS
+Requested loopback latency in milliseconds, 0\(en1000 (default 15).
+.SH EXAMPLES
+.TP
+.B cw-mic-mix
+Set up the mix using the current default microphone and output.
+.TP
+.B cw-mic-mix alsa_input.usb-mic alsa_output.pci-speakers
+Use explicit source and sink names.
+.TP
+.B cw-mic-mix --unload
+Tear the setup down again.
+.SH SEE ALSO
+.BR cwkeyer (1),
+.BR pactl (1)
+.SH LICENSE
+GPL-3.0-or-later.
