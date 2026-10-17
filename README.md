@@ -36,6 +36,8 @@ The build is deliberately strict by default: `-Werror` plus a broad warning set 
 - `tests/test_signals.c` — `SIGPIPE` ignored, a stop signal stops the loops, terminal disable/restore is idempotent on a pty, and `SIGTSTP`/`SIGCONT` genuinely stop and resume.
 - `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation.
 
+There is also an optional differential test against the real UnixCW libcw keyer: `make test-libcw` drives libcw's iambic graph and our mode B core with identical random paddle schedules and compares the element sequences (200k trials, no mismatches). It needs a built unixcw checkout; set `LIBCW_DIR` if it is not at `../unixcw-code`. It is not part of `make test` or CI because of that external dependency.
+
 A live paddle/listening check is still useful after changing timing, debouncing, or ALSA settings.
 
 `make coverage` (requires `gcovr`) runs the C suites with `--coverage` and writes an HTML report to `coverage/index.html` plus a Cobertura `coverage/coverage.xml`. Coverage is reported for `cwkeyer.c` only; the untested ALSA/evdev/main paths keep it around 44%, so treat it as a map of what to test next rather than a target.

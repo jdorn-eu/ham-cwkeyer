@@ -37,7 +37,7 @@ endif
 CPPFLAGS += -DCWKEYER_VERSION='"$(VERSION)"'
 LDLIBS    = -lasound -lpthread -lm
 
-.PHONY: test analyze coverage install uninstall dist clean
+.PHONY: test analyze coverage test-libcw install uninstall dist clean
 
 cwkeyer: cwkeyer.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -o $@ $< $(LDLIBS)
@@ -53,6 +53,21 @@ test:
 # GCC's static analyzer; slower than a normal build, so kept separate.
 analyze:
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fanalyzer -c cwkeyer.c -o /dev/null
+
+# Differential test against UnixCW's iambic keyer. Needs a built unixcw
+# checkout (./configure && make); override LIBCW_DIR if it lives elsewhere.
+LIBCW_DIR ?= ../unixcw-code
+test-libcw:
+	@test -f "$(LIBCW_DIR)/src/libcw/.libs/libcw.a" || { \
+	    echo "error: build unixcw first, or set LIBCW_DIR (now $(LIBCW_DIR))"; \
+	    exit 1; }
+	$(CC) $(CFLAGS) -Wall -Wextra -o test_differential_libcw \
+	    -I"$(LIBCW_DIR)/src" -I"$(LIBCW_DIR)/src/libcw" \
+	    tests/test_differential_libcw.c \
+	    "$(LIBCW_DIR)/src/libcw/.libs/libcw.a" \
+	    -lasound -lpulse -lpulse-simple -ldl $(LDLIBS)
+	./test_differential_libcw
+	rm -f test_differential_libcw
 
 # Code coverage (needs gcovr). Writes coverage/index.html and coverage.xml.
 coverage:
@@ -85,5 +100,5 @@ dist:
 	@echo "wrote ham-cwkeyer-$(VERSION).tar.gz"
 
 clean:
-	rm -f cwkeyer
+	rm -f cwkeyer test_differential_libcw
 	rm -rf coverage
