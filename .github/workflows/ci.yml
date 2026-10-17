@@ -17,11 +17,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev shellcheck
 
-      - name: Strict build
-        run: make clean && make CFLAGS='-O2 -Wall -Wextra -Wpedantic -Werror'
+      - name: Build (strict)
+        run: make clean && make
 
       - name: Test
         run: make test
 
+      - name: Static analysis
+        run: make analyze
+
       - name: Lint scripts
         run: shellcheck cw-mic-mix.sh tests/test_mic_mix.sh
+
+  sanitizers:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
+
+      - name: Test with AddressSanitizer and UndefinedBehaviorSanitizer
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: |
+          make clean
+          make test CFLAGS='-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer'

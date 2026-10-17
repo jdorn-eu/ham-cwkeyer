@@ -38,7 +38,7 @@ The build is deliberately strict by default: `-Werror` plus a broad warning set 
 
 A live paddle/listening check is still useful after changing timing, debouncing, or ALSA settings.
 
-CI (`.github/workflows/ci.yml`) runs a `-Werror` build, `make test`, and `shellcheck` on every push and pull request.
+CI (`.github/workflows/ci.yml`) runs the strict build, `make test`, `make analyze`, and `shellcheck`, plus a second job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer, on every push and pull request.
 
 ## License
 
