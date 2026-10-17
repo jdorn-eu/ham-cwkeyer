@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Sets up a virtual "CW_Mic_Mix" device that combines your real microphone
 # with the CW sidetone, so apps like Discord/Mumble can use it as a mic.
 #

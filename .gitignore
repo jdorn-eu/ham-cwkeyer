@@ -97,3 +97,6 @@ zsdoc/data
 
 # End of https://www.toptal.com/developers/gitignore/api/c,zsh
 
+
+# Local Curtis 8044 reference material (not redistributed)
+curtis8044_docs/

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * cwkeyer.c — low-latency iambic CW sidetone keyer
  *

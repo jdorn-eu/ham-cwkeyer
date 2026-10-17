@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* Hardware-independent regression tests for decoding and PCM mark timing. */
 #define main cwkeyer_program_main
 #include "../cwkeyer.c"
