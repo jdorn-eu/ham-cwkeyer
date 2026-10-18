@@ -170,6 +170,32 @@ static int run_iambic_tests(void)
     }
     failures += expect_seq("squeeze alternates", &s, ".-.-.-");
 
+    /*
+     * First-lever-first: when both levers arrive in the same sample, the
+     * starting element follows the lever that was closed first.  The dot is
+     * only the fallback when the order is unknown.
+     */
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    k.first_lever = KY_FIRST_DOT;
+    keyer_core_paddles(&k, 1, 1);
+    emit(&s, &k);
+    failures += expect_seq("first lever dit", &s, ".");
+
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    k.first_lever = KY_FIRST_DASH;
+    keyer_core_paddles(&k, 1, 1);
+    emit(&s, &k);
+    failures += expect_seq("first lever dah", &s, "-");
+
+    memset(&k, 0, sizeof(k));
+    s = (seq_t){0};
+    k.first_lever = KY_FIRST_UNKNOWN;
+    keyer_core_paddles(&k, 1, 1);
+    emit(&s, &k);
+    failures += expect_seq("first lever unknown", &s, ".");
+
     return failures;
 }
 
@@ -385,6 +411,72 @@ static int run_evdev_tests(void)
     }
 
     clear_input_state();
+    return failures;
+}
+
+/* ---------------- press ordering ---------------- */
+
+/*
+ * The evdev thread stamps each press with a monotonic counter, and the
+ * keyer uses the stamps to start a same-sample squeeze with the lever that
+ * was closed first.
+ */
+static int run_press_order_tests(void)
+{
+    int failures = 0;
+    int64_t saved_debounce = debounce_ns;
+    keyer_t k;
+
+    dit_code = KEY_LEFTCTRL;
+    dah_code = KEY_RIGHTCTRL;
+    debounce_ns = 0;   /* raw levels: what we set is what the core samples */
+
+    /* Dit pressed first: the lower stamp, and it keys first. */
+    clear_input_state();
+    set_key_state(dit_code, 1);
+    set_key_state(dah_code, 1);
+    if (ALOAD(dit_press_seq) >= ALOAD(dah_press_seq)) {
+        fprintf(stderr, "press order: first dit did not get the lower stamp\n");
+        failures++;
+    }
+    k = (keyer_t){0};
+    sample_keyer_paddles(&k);
+    if (k.first_lever != KY_FIRST_DOT || k.state != KY_IN_DOT) {
+        fprintf(stderr, "press order: dit-first squeeze did not start on a dit\n");
+        failures++;
+    }
+
+    /* Dah pressed first: the reverse. */
+    clear_input_state();
+    set_key_state(dah_code, 1);
+    set_key_state(dit_code, 1);
+    k = (keyer_t){0};
+    sample_keyer_paddles(&k);
+    if (k.first_lever != KY_FIRST_DASH || k.state != KY_IN_DASH) {
+        fprintf(stderr, "press order: dah-first squeeze did not start on a dah\n");
+        failures++;
+    }
+
+    /* A lever held before the other keeps the earlier stamp. */
+    clear_input_state();
+    set_key_state(dah_code, 1);
+    k = (keyer_t){0};
+    sample_keyer_paddles(&k);          /* dah starts on its own */
+    set_key_state(dit_code, 1);
+    sample_keyer_paddles(&k);          /* dit joins the squeeze */
+    if (k.first_lever != KY_FIRST_DASH) {
+        fprintf(stderr, "press order: held dah was not kept as first\n");
+        failures++;
+    }
+
+    /* clear_input_state resets the stamps. */
+    clear_input_state();
+    if (ALOAD(dit_press_seq) != 0 || ALOAD(dah_press_seq) != 0) {
+        fprintf(stderr, "press order: stamps survived clear_input_state\n");
+        failures++;
+    }
+
+    debounce_ns = saved_debounce;
     return failures;
 }
 
@@ -1070,6 +1162,7 @@ int main(void)
     failures += run_iambic_tests();
     failures += run_debounce_tests();
     failures += run_evdev_tests();
+    failures += run_press_order_tests();
     failures += run_decode_tests();
     failures += run_arg_tests();
     failures += run_control_tests();

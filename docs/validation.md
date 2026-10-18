@@ -255,9 +255,10 @@ exhibiting behaviour the type B model lacks.
 
 **Proven against the published specification:** the type B decision rule
 (extra element on squeeze release, dot and dash level memory, held-paddle
-repeat, mid-element tap registration), and the surrounding timing model
-(RC debounce, triggered clock, 1:1:3 ratio, constant-time weighting, no
-automatic spacing).
+repeat, mid-element tap registration), the first-lever rule (the stream
+starts with whichever lever was closed first; the evdev layer stamps the
+press order), and the surrounding timing model (RC debounce, triggered
+clock, 1:1:3 ratio, constant-time weighting, no automatic spacing).
 
 **Corroborated by independent software:** identical element sequences to
 UnixCW libcw over 200 000 random schedules, and to the three independent

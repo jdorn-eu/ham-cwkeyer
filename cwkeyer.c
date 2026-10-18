@@ -140,6 +140,17 @@ static atomic_int dah_paddle = 0;
 static atomic_int dit_edge = 0;
 static atomic_int dah_edge = 0;
 
+/*
+ * Press order.  The evdev thread sees the levers in kernel order, so it
+ * stamps each press with a monotonic counter.  A currently-held lever keeps
+ * the stamp of the press that closed it, so of two held levers the smaller
+ * stamp is the one closed first.  0 means "not pressed this session" (for
+ * example a lever already held at startup).
+ */
+static atomic_uint dit_press_seq = 0;
+static atomic_uint dah_press_seq = 0;
+static unsigned press_seq = 0;   /* evdev thread only */
+
 /* Single producer (keyer thread), single consumer (audio thread). */
 enum { MARK_QUEUE_SIZE = 256 };
 typedef struct {
@@ -619,6 +630,19 @@ typedef enum {
 } keyer_state_t;
 
 /*
+ * Which lever was closed first when both are down in the same sample.  The
+ * 8044 starts the stream with that lever's element ("the stream commences
+ * with the element ... corresponding to whichever key was closed first").
+ * KY_FIRST_UNKNOWN falls back to the dot, which is what a caller that has
+ * no ordering information (e.g. a unit test) gets.
+ */
+typedef enum {
+    KY_FIRST_UNKNOWN = 0,
+    KY_FIRST_DOT,
+    KY_FIRST_DASH
+} keyer_first_t;
+
+/*
  * Contact filtering.  The 8044 uses an external RC low-pass on each paddle
  * input; the recommended 1M/0.01uF network has a time constant of about
  * 10 ms.  The same idea is modelled here with a first-order filter on the
@@ -638,6 +662,9 @@ typedef struct {
 
     int dot_paddle;
     int dash_paddle;
+
+    /* Transient input: which lever closed first in this sample. */
+    keyer_first_t first_lever;
 
     /* Mode B level latches. */
     int dot_latch;
@@ -723,9 +750,20 @@ static void keyer_core_paddles(keyer_t *keyer, int dot_down, int dash_down)
         /*
          * Nudge the machine out of idle. Pretend we are at the end of the
          * opposite element's space so the step picks the right first
-         * element (dot wins if both levers arrive in the same sample).
+         * element. The first element follows the lever that was closed
+         * first; if only one lever is down that is also the answer, and if
+         * both arrived together without a known order the dot wins.
          */
-        if (dot_down)
+        int dot_first;
+
+        if (!dash_down)
+            dot_first = 1;
+        else if (!dot_down)
+            dot_first = 0;
+        else
+            dot_first = keyer->first_lever != KY_FIRST_DASH;
+
+        if (dot_first)
             keyer->state = KY_AFTER_DASH;
         else
             keyer->state = KY_AFTER_DOT;
@@ -806,6 +844,23 @@ static void sample_keyer_paddles(keyer_t *keyer)
                                                memory_order_relaxed);
     int dah_latched = atomic_exchange_explicit(&dah_edge, 0,
                                                memory_order_relaxed);
+    unsigned dit_seq = atomic_load_explicit(&dit_press_seq,
+                                            memory_order_relaxed);
+    unsigned dah_seq = atomic_load_explicit(&dah_press_seq,
+                                            memory_order_relaxed);
+
+    /*
+     * Record which lever was closed first, for the one case where it
+     * matters: both levers already registered in the same sample while the
+     * core is idle.  Otherwise the first lever starts its element before
+     * the second is ever seen, so the order is already implicit.
+     */
+    if (dit_seq < dah_seq)
+        keyer->first_lever = KY_FIRST_DOT;
+    else if (dah_seq < dit_seq)
+        keyer->first_lever = KY_FIRST_DASH;
+    else
+        keyer->first_lever = KY_FIRST_UNKNOWN;
 
     keyer_sample(keyer,
                  ALOAD(dit_paddle) || dit_latched,
@@ -855,6 +910,9 @@ static void clear_input_state(void)
     ASTORE(dah_paddle, 0);
     ASTORE(dit_edge, 0);
     ASTORE(dah_edge, 0);
+    ASTORE(dit_press_seq, 0);
+    ASTORE(dah_press_seq, 0);
+    press_seq = 0;
 }
 
 static void set_key_state(int code, int down)
@@ -863,14 +921,18 @@ static void set_key_state(int code, int down)
 
     if (code == dit_code) {
         ASTORE(dit_paddle, down);
-        if (down)
+        if (down) {
             ASTORE(dit_edge, 1);
+            ASTORE(dit_press_seq, ++press_seq);
+        }
     }
 
     if (code == dah_code) {
         ASTORE(dah_paddle, down);
-        if (down)
+        if (down) {
             ASTORE(dah_edge, 1);
+            ASTORE(dah_press_seq, ++press_seq);
+        }
     }
 }
 
