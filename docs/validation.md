@@ -196,6 +196,13 @@ Chuck Adams (K7QO) documents with a stroke chart [5].  Three clean timing
 profiles are run exactly; a fourth sweep adds plus or minus 12 ms of human
 timing jitter.
 
+A second gesture implements K7QO's "hold the squeeze" technique, which
+leans much harder on the memory: a lever is held through an opposite
+element whenever the code alternates straight back to it, so the next
+same element is produced from the dot/dash memory (C is sent "RL" -
+both held, release on the second dah - and F is "Lr", hold the dit and
+tap the dah).
+
 ## 5. Results
 
 ### 5.1 Reference scenarios
@@ -240,13 +247,14 @@ tap/release boundary - never a different policy.
 
 ### 5.4 Realistic per-character gestures
 
-With clean timing, **every implementation keys all 48 characters
-correctly**.  With plus or minus 12 ms of jitter the core and most
-implementations stay at or above 98 %; `vk6ph`, whose memory is written
-only from the live paddles during the inter-element delay, is the one that
-slips most (about 98 %).  So the adversarial random schedules overstate the
-practical divergence: real characters, even with human jitter, come out
-right on every implementation tested.
+With clean timing, and with the K7QO hold-the-squeeze technique, **every
+implementation keys all 48 characters correctly**.  With plus or minus
+12 ms of jitter the core and most implementations stay at or above 98 %;
+`vk6ph`, whose memory is written only from the live paddles during the
+inter-element delay, is the one that slips most (about 98 %).  So the
+adversarial random schedules overstate the practical divergence: real
+characters, sent either way, come out right on every implementation
+tested.
 
 ## 6. What the divergences are
 

@@ -979,6 +979,81 @@ static int make_char_gesture(const char *code, int a_pct, int b_pct,
     return dur;
 }
 
+/*
+ * K7QO's "hold the squeeze" technique.  The operator presses the first
+ * element's lever, and at each change of element presses the next lever
+ * while the current one is still held; the old lever is held through the
+ * opposite element whenever the code alternates straight back to it (so
+ * the next same element is produced from the memory), and released
+ * otherwise.  This is the technique in K7QO's stroke chart: e.g. C is sent
+ * "RL" (both held, release on the second dah) and F is "Lr" (hold the dit,
+ * tap the dah).  It relies much more on the dot/dash memory than the
+ * straightforward gesture above.
+ */
+static int make_hold_gesture(const char *code, int a_pct, int b_pct,
+                             unsigned char *bits, int maxlen)
+{
+    struct ev { int t, dl, hl; } evs[64];
+    int T[64];
+    int n = (int)strlen(code);
+    int t = 0, ne = 0, dl = 0, hl = 0, dur;
+
+    if (n <= 0 || n > 64 || maxlen <= 0)
+        return 0;
+
+    for (int i = 0; i < n; i++) {
+        T[i] = t;
+        t += ((code[i] == '.') ? DIT_T : DASH_T) + DIT_T;
+    }
+
+    if (code[0] == '.') dl = 1; else hl = 1;
+    evs[ne++] = (struct ev){0, dl, hl};
+
+    for (int i = 0; i < n; i++) {
+        int mark = (code[i] == '.') ? DIT_T : DASH_T;
+        int release;
+
+        if (i + 1 < n && code[i + 1] != code[i]) {
+            if (code[i + 1] == '.') dl = 1; else hl = 1;
+            evs[ne++] = (struct ev){T[i] + mark * a_pct / 100, dl, hl};
+        }
+
+        if (i + 1 == n)
+            release = 1;                              /* last element */
+        else if (code[i + 1] == code[i])
+            release = 0;                              /* run: hold */
+        else if (i + 2 < n && code[i + 2] == code[i])
+            release = 0;                              /* alternates back: hold */
+        else
+            release = 1;                              /* release in time */
+
+        if (release) {
+            if (code[i] == '.') dl = 0; else hl = 0;
+            evs[ne++] = (struct ev){T[i] + mark * b_pct / 100, dl, hl};
+        }
+    }
+
+    dur = t + DIT_T * 2;
+    if (dur > maxlen - 1)
+        dur = maxlen - 1;
+
+    {
+        int ei = 0, cd = 0, ch = 0;
+
+        for (int i = 0; i < dur; i++) {
+            while (ei < ne && evs[ei].t <= i) {
+                cd = evs[ei].dl;
+                ch = evs[ei].hl;
+                ei++;
+            }
+            bits[i] = (unsigned char)((cd << 1) | ch);
+        }
+        bits[dur] = 0;
+    }
+
+    return dur;
+}
+
 enum { MAX_IMPL = 16 };
 
 /* Run one gesture through implementation k; 1 if it emits exactly `code`. */
@@ -1031,6 +1106,7 @@ static int run_character_tests(struct impl *impls, int N, int quiet)
     const int jtrials = 20;
     static struct ours ours_ref;
     int cmin[MAX_IMPL];
+    int hcorrect[MAX_IMPL] = {0};
     int jcorrect[MAX_IMPL] = {0};
     unsigned rng = 1;
     int nchar = 0;
@@ -1072,6 +1148,30 @@ static int run_character_tests(struct impl *impls, int N, int quiet)
                    correct[0], nchar);
     }
 
+    /* K7QO hold-the-squeeze technique. */
+    {
+        int correct[MAX_IMPL] = {0};
+
+        for (int ci = 0; ci < nchar; ci++) {
+            unsigned char bits[4096];
+            int len = make_hold_gesture(morse_table[ci].code, 40, 85,
+                                        bits, (int)sizeof(bits));
+
+            for (int k = 0; k < N; k++)
+                correct[k] += char_ok(impls, k, bits, len, &ours_ref,
+                                      morse_table[ci].code);
+        }
+
+        for (int i = 0; i < N; i++) {
+            hcorrect[i] = correct[i];
+            if (correct[i] < cmin[i])
+                cmin[i] = correct[i];
+        }
+
+        if (!quiet)
+            printf("  hold-squeeze (K7QO): ours %d/%d\n", correct[0], nchar);
+    }
+
     for (int jt = 0; jt < jtrials; jt++) {
         for (int ci = 0; ci < nchar; ci++) {
             unsigned char bits[4096];
@@ -1089,8 +1189,8 @@ static int run_character_tests(struct impl *impls, int N, int quiet)
 
         printf("  characters correct by implementation:\n");
         for (int i = 0; i < N; i++)
-            printf("    %-8s clean worst %d/%d, jittered %.1f%%\n",
-                   impls[i].name, cmin[i], nchar,
+            printf("    %-8s clean worst %d/%d, hold %d/%d, jittered %.1f%%\n",
+                   impls[i].name, cmin[i], nchar, hcorrect[i], nchar,
                    100.0 * (double)jcorrect[i] / (double)opportunities);
     }
 
