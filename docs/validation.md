@@ -98,6 +98,28 @@ gives the operational test used below:
 > would let go of both after hearing the last dit.  With mode B, you start
 > the same BUT let go of both paddles after hearing the second *dah*.
 
+DJ5IL's own hardware keyer, *Keyrama*, states the same distinction again
+in implementation terms.  Its front-panel LEDs separate a
+memory-triggered element from a directly-triggered one, and the manual
+defines the memory like this:
+
+> a MEM-LED lights up when the associated MEMory is set because that
+> lever changed its state from "unpressed" to "pressed" (modes IA / U /
+> S / E) or because it just was in the state "pressed" (mode IB)
+> sometime during generation of an element.
+
+The first half is the edge rule (type A); the second half is the level
+rule (type B) — the same split, stated from the implementation side.  The
+same manual bounds it: in the iambic modes "one single opposite element
+can be stored", which is exactly what the two latches hold and no more.
+
+One consequence Keyrama records is worth noting: contact bounce on
+*opening* a lever corrupts type A, ultimatic and single-dot keying, but
+not type B, because in type B the level memory already emits the extra
+element the bounce would otherwise spuriously trigger.  This core
+inherits that robustness; bounce on *closing* is the side the RC filter
+exists to reject.
+
 ## 4. How it is tested
 
 ### 4.1 The core's test surface
@@ -263,3 +285,5 @@ References:
    <http://cq-cq.eu/DJ5IL_rt007.pdf>.
 3. Chuck Olson (WB9KZY), *What's all this iambic keyer mode A and B stuff,
    anyhow?*, Jackson Harbor Press.
+4. Karl Fischer (DJ5IL), *Keyrama: A unique PIC-based multi-mode Morse
+   code keyer*, 4 October 2016, <http://cq-cq.eu/DJ5IL_rt008.pdf>.
