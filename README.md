@@ -44,6 +44,8 @@ The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env
 
 There is also an optional differential test against the real UnixCW libcw keyer: `make test-libcw` drives libcw's iambic graph and our mode B core with identical random paddle schedules and compares the element sequences (200k trials, no mismatches). It needs a built unixcw checkout; set `LIBCW_DIR` if it is not at `../unixcw-code`. It is not part of `make test` or CI because of that external dependency.
 
+`make test-differential` is a self-contained differential test against eight third-party iambic keyer variants (seven projects: recri/keyer's vk6ph, ad5dz, dttsp, k1el and nd7pa, plus cw-dojo and morse-flipper; dttsp is tested in two configurations). Each algorithm is transcribed into the test, so it needs no external checkout; it checks the published `N`/`A`/`C` reference cases and 20,000 random paddle schedules. It is kept out of `make test` because it takes a few seconds. See `docs/validation.md` for the results and for the argument that the type B core matches the 8044ABM specification.
+
 A live paddle/listening check is still useful after changing timing, debouncing, or ALSA settings.
 
 `make coverage` (requires `gcovr`) runs the C suites with `--coverage` and writes an HTML report to `coverage/index.html` plus a Cobertura `coverage/coverage.xml`. Coverage is reported for `cwkeyer.c` only and sits around 78%; the remainder is mostly error paths that are hard to trigger (thread-creation failure, ALSA recovery, evdev read errors) and the usage text, so treat it as a map of what to test next rather than a target.
@@ -54,7 +56,7 @@ CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict
 
 GPL-3.0-or-later; see `LICENSE`.
 
-Mode behaviour follows the primary sources: the Curtis Electro Devices *8044 Series Keyer-on-a-Chip Application Note* and Karl Fischer (DJ5IL), *All About Squeeze-Keying*. The latter distinguishes the true type A edge-memory rule from the Accu-keyer type B latch rule; this project implements and verifies only the Accu-keyer/type B behaviour, against UnixCW libcw on 200k random paddle schedules.
+Mode behaviour follows the primary sources: the Curtis Electro Devices *8044 Series Keyer-on-a-Chip Application Note* and Karl Fischer (DJ5IL), *All About Squeeze-Keying*. The latter distinguishes the true type A edge-memory rule from the Accu-keyer type B latch rule; this project implements and verifies only the Accu-keyer/type B behaviour, against UnixCW libcw on 200k random paddle schedules and eight third-party keyer variants (see `docs/validation.md`).
 
 ## Build
 ```

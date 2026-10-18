@@ -42,7 +42,7 @@ LDLIBS    = -lasound -lpthread -lm
 
 CTESTS = test_keyer test_signals test_audio test_evdev
 
-.PHONY: test analyze coverage test-libcw install uninstall dist clean
+.PHONY: test test-differential analyze coverage test-libcw install uninstall dist clean
 
 cwkeyer: cwkeyer.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -o $@ $< $(LDLIBS)
@@ -54,6 +54,18 @@ test:
 	    "$$tmp/$$t" || exit 1; \
 	done; \
 	bash tests/test_mic_mix.sh
+
+# Differential test against eight third-party iambic keyer variants (seven
+# upstream projects; transcribed in the test, so no external dependency).
+# Kept out of `make test` because it takes a few seconds.  Pass arguments
+# to sweep speed and input timing, e.g. `make test-differential ARGS="20 50 300"`.
+ARGS ?=
+test-differential:
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) \
+	    -o "$$tmp/test_differential_thirdparty" \
+	    tests/test_differential_thirdparty.c $(LDLIBS) || exit 1; \
+	"$$tmp/test_differential_thirdparty" $(ARGS) || exit 1
 
 # GCC's static analyzer; slower than a normal build, so kept separate.
 analyze:

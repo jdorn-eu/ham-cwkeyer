@@ -23,6 +23,9 @@ jobs:
       - name: Test
         run: make test
 
+      - name: Differential test against third-party keyers
+        run: make test-differential
+
       - name: Static analysis
         run: make analyze
 
@@ -44,6 +47,7 @@ jobs:
           make clean
           make CC=clang
           make test CC=clang
+          make test-differential CC=clang
 
   sanitizers:
     runs-on: ubuntu-26.04
