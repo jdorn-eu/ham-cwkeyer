@@ -191,8 +191,10 @@ The gesture follows the standard iambic technique: press the first lever,
 and at each change of element press the next lever while the current one is
 still held (a squeeze) and release the old one before that element ends,
 holding through runs.  It comes from the code and the 1:3:1 timing only,
-not from any implementation.  Three clean timing profiles are run exactly;
-a fourth sweep adds plus or minus 12 ms of human timing jitter.
+not from any implementation, and follows the per-character technique
+Chuck Adams (K7QO) documents with a stroke chart [5].  Three clean timing
+profiles are run exactly; a fourth sweep adds plus or minus 12 ms of human
+timing jitter.
 
 ## 5. Results
 
@@ -292,6 +294,16 @@ single internal clock tick; that corner is under-determined by the
 available sources.  What can be said is that the core agrees with the
 published rule and with a mature independent implementation of it.
 
+One operational source (K7QO [5]) describes the type B memory as set
+only when the opposite lever is held to the mid-point of the element,
+whereas the level-memory model - this core, UnixCW libcw, and DJ5IL's
+Keyrama - latches on a press at any time during the element.  The two
+agree for normal squeezes and differ only for a tap that both starts and
+ends inside the first half of an element: K7QO would drop it, this core
+remembers it.  The application note's dot-memory rationale ("remember
+that you hit the dot key even though you hit the key early") and the
+200 000-trial libcw agreement support the continuous model.
+
 ## 8. Reproducing
 
 ```
@@ -310,3 +322,6 @@ References:
    anyhow?*, Jackson Harbor Press.
 4. Karl Fischer (DJ5IL), *Keyrama: A unique PIC-based multi-mode Morse
    code keyer*, 4 October 2016, <http://cq-cq.eu/DJ5IL_rt008.pdf>.
+5. Chuck Adams (K7QO), *Using an Iambic Paddle*, revised 18 October
+   2006.
+6. Marshall G. Emm (N1FN), *Iambic Keying - Debunking the Myth*.
