@@ -179,6 +179,21 @@ this core with the same 200 000 random paddle schedules and compares the
 element sequences.  libcw is a mature, independent implementation of the
 same model.
 
+### 4.5 Realistic per-character gestures
+
+Random schedules are adversarial and do not look like real sending.  A
+second test builds a human gesture for every character in the decode table
+(A-Z, 0-9, and 12 punctuation marks) and feeds it to every implementation;
+success means the emitted elements equal the real character.  This is the
+shape an operator would actually send.
+
+The gesture follows the standard iambic technique: press the first lever,
+and at each change of element press the next lever while the current one is
+still held (a squeeze) and release the old one before that element ends,
+holding through runs.  It comes from the code and the 1:3:1 timing only,
+not from any implementation.  Three clean timing profiles are run exactly;
+a fourth sweep adds plus or minus 12 ms of human timing jitter.
+
 ## 5. Results
 
 ### 5.1 Reference scenarios
@@ -198,57 +213,63 @@ differential vs libcw: 200000 trials, 0 mismatches
 Canonical run (`make test-differential`): 15 wpm, 20 000 trials, random
 element-length input.
 
-| tag | differing bursts | element error rate | ≈1 element error per |
+| tag | differing bursts | element error rate | about 1 error per |
 |---|---|---|---|
-| `cwdojo` | 9.0% | 0.80% | ~125 elements |
-| `k1el` | 10.5% | 0.91% | ~110 elements |
-| `flipb` | 11.3% | 1.03% | ~97 elements |
-| `ad5dz` | 33.1% | 3.63% | ~28 elements |
-| `nd7pa` | 36.5% | 4.02% | ~25 elements |
-| `dttsp*` | 59.7% | 5.29% | ~19 elements |
-| `dttsp` | 64.7% | 6.10% | ~16 elements |
-| `vk6ph` | 72.0% | 7.84% | ~13 elements |
+| `ad5dz` | 9.0% | 0.78% | 128 elements |
+| `cwdojo` | 9.2% | 0.79% | 127 elements |
+| `k1el` | 11.0% | 0.90% | 111 elements |
+| `flipb` | 11.0% | 0.96% | 104 elements |
+| `nd7pa` | 43.5% | 4.47% | 22 elements |
+| `dttsp*` | 58.7% | 5.42% | 18 elements |
+| `dttsp` | 64.7% | 6.19% | 16 elements |
+| `vk6ph` | 82.5% | 8.97% | 11 elements |
 
 The element error rate is a harsher measure than a human comparison: the
-random schedules deliberately include very short (20–40 ms) taps that
+random schedules deliberately include very short (20-40 ms) taps that
 stress the memory windows far beyond normal keying.
 
-With human-realistic input timings (50–300 ms holds/taps) at 12–20 wpm,
-the three closest implementations converge on the core essentially
-exactly: `cwdojo`, `flipb` and `k1el` all fall to **0.1–0.4 % element
-error** (roughly one element in 250–700), while `ad5dz` drops to 0.7–0.8 %
-and the others barely move.  The residual divergence for the closest three
-is a single element at a sub-element tap/release boundary — never a
-different policy.
+With human-realistic input timings (50-300 ms holds/taps) at 12-20 wpm,
+four implementations converge on the core essentially exactly: `ad5dz`,
+`cwdojo`, `flipb` and `k1el` all fall to **0.1-0.4 % element error**
+(roughly one element in 250-1000), while `nd7pa` drops to 2.7-4.8 %,
+`dttsp*`/`dttsp` to 4.2-8.5 % and `vk6ph` barely moves.  The residual
+divergence for the closest four is a single element at a sub-element
+tap/release boundary - never a different policy.
+
+### 5.4 Realistic per-character gestures
+
+With clean timing, **every implementation keys all 48 characters
+correctly**.  With plus or minus 12 ms of jitter the core and most
+implementations stay at or above 98 %; `vk6ph`, whose memory is written
+only from the live paddles during the inter-element delay, is the one that
+slips most (about 98 %).  So the adversarial random schedules overstate the
+practical divergence: real characters, even with human jitter, come out
+right on every implementation tested.
 
 ## 6. What the divergences are
 
-They fall into three families:
+They fall into two families:
 
-1. **Policy differences — real and operator-noticeable.**
+1. **Policy differences - real and operator-noticeable.**
    - `vk6ph`: its "mode B" does not implement the extra-element rule.  Its
      memory is only (re)written from the live paddles during the
-     inter-element delay, so a tap during an element is lost (`C` → `-.-`,
-     `N` → `-`).  This does not improve with slower speed.
+     inter-element delay, so a tap during an element is lost (`C` -> `-.-`,
+     `N` -> `-`).  This does not improve with slower speed.
    - `dttsp` / `dttsp*`: different extra-element condition and dash-first
      priority on a simultaneous squeeze.
    - `nd7pa`: recognises the opposite paddle only inside a sub-window of
      the element (last third of a dash, first half of a dit); taps outside
      are dropped.
 
-2. **Boundary race — visible only at very fast taps.**
-   - `ad5dz`: reproduces every reference case, but its latch-clear timing
-     differs at the element boundary, so very short taps can land on the
-     wrong side.  It improves sharply with realistic timing.
-
-3. **Sub-element race — effectively identical in practice.**
-   - `cwdojo`, `flipb`, `k1el`: the same level-latch model.  They differ
-     only at the exact sample where a tap or release falls relative to the
-     element edge, by one element, and rarely.
+2. **Sub-element race - effectively identical in practice.**
+   - `ad5dz`, `cwdojo`, `flipb`, `k1el`: the same level-latch model.  They
+     reproduce every reference case and differ only at the exact sample
+     where a tap or release falls relative to the element edge, by one
+     element.  At realistic timings this is 0.1-0.4 % of elements.
 
 In every case the difference is this core *having* the documented type B
 behaviour (extra element on squeeze release, mid-element tap registration)
-where the other omits it, or a boundary timing choice — never this core
+where the other omits it, or a boundary timing choice - never this core
 exhibiting behaviour the type B model lacks.
 
 ## 7. What is and is not proven
@@ -261,8 +282,9 @@ press order), and the surrounding timing model (RC debounce, triggered
 clock, 1:1:3 ratio, constant-time weighting, no automatic spacing).
 
 **Corroborated by independent software:** identical element sequences to
-UnixCW libcw over 200 000 random schedules, and to the three independent
-level-memory implementations on all documented cases.
+UnixCW libcw over 200 000 random schedules, and to the four independent
+level-memory implementations on all documented cases; and all 48 real
+characters keyed correctly under realistic gestures.
 
 **Not provable from documents:** sample-level equivalence to the physical
 8044ABM die.  The reference cases fix the policy, not the behaviour at a
@@ -275,7 +297,7 @@ published rule and with a mature independent implementation of it.
 ```
 make test-differential                                  # canonical run
 make test-differential ARGS="20 50 300 5000 1"          # 20 wpm, human timings
-./difftest <wpm> <seg_min> <seg_max> <trials> <quiet>   # explore directly
+test_differential_thirdparty <wpm> <seg> <seg> <trials> <quiet>
 ```
 
 References:

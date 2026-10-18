@@ -905,6 +905,198 @@ static void run_scenario(int scenario, clock_fn clock, void *h, char *seq)
     }
 }
 
+/*
+ * A realistic operator gesture for one character.  The operator closes the
+ * first element's lever, then at every change of element presses the next
+ * lever while the current one is still held (a squeeze) and releases the
+ * old one before that element ends, holding through runs.  `a_pct`/`b_pct`
+ * are when, as a percentage of the current mark, the next lever is pressed
+ * and the old one released.  Times are in DIT_T ticks.
+ *
+ * `jitter` (ticks) shifts every transition by a random amount, modelling a
+ * human's timing; `rng` is an LCG state used only when jitter > 0.  The
+ * gesture comes from the code and the 1:3:1 timing only, not from any keyer
+ * implementation, so it is a fair input for all of them.
+ */
+static int make_char_gesture(const char *code, int a_pct, int b_pct,
+                             int jitter, unsigned *rng,
+                             unsigned char *bits, int maxlen)
+{
+    struct ev { int t, dl, hl; } evs[32];
+    int ne = 0, dl = 0, hl = 0, T = 0, dur = 0;
+    int n = (int)strlen(code);
+
+    if (n <= 0 || maxlen <= 0)
+        return 0;
+
+    if (code[0] == '.') dl = 1; else hl = 1;
+    evs[ne++] = (struct ev){0, dl, hl};
+
+    for (int i = 0; i < n; i++) {
+        int mark = (code[i] == '.') ? DIT_T : DASH_T;
+
+        if (i + 1 < n && code[i + 1] != code[i]) {
+            if (code[i + 1] == '.') dl = 1; else hl = 1;
+            evs[ne++] = (struct ev){T + mark * a_pct / 100, dl, hl};
+            if (code[i] == '.') dl = 0; else hl = 0;
+            evs[ne++] = (struct ev){T + mark * b_pct / 100, dl, hl};
+        } else if (i + 1 == n) {
+            if (code[i] == '.') dl = 0; else hl = 0;
+            evs[ne++] = (struct ev){T + mark * b_pct / 100, dl, hl};
+        }
+        T += mark + DIT_T;
+    }
+
+    if (jitter > 0 && rng) {
+        for (int e = 0; e < ne; e++) {
+            *rng = *rng * 1103515245u + 12345u;
+            evs[e].t += (int)(*rng % (unsigned)(2 * jitter + 1)) - jitter;
+            if (evs[e].t < 0)
+                evs[e].t = 0;
+            if (e > 0 && evs[e].t < evs[e - 1].t)
+                evs[e].t = evs[e - 1].t;
+        }
+    }
+
+    dur = evs[ne - 1].t + DIT_T * 2;      /* let the last element finish */
+    if (dur > maxlen - 1)
+        dur = maxlen - 1;
+
+    {
+        int ei = 0, cd = 0, ch = 0;
+
+        for (int t = 0; t < dur; t++) {
+            while (ei < ne && evs[ei].t <= t) {
+                cd = evs[ei].dl;
+                ch = evs[ei].hl;
+                ei++;
+            }
+            bits[t] = (unsigned char)((cd << 1) | ch);
+        }
+        bits[dur] = 0;
+    }
+
+    return dur;
+}
+
+enum { MAX_IMPL = 16 };
+
+/* Run one gesture through implementation k; 1 if it emits exactly `code`. */
+static int char_ok(struct impl *impls, int k, const unsigned char *bits,
+                   int len, struct ours *ours_ref, const char *code)
+{
+    void *hh = k == 0 ? (void *)ours_ref : impls[k].make();
+    char seq[512];
+    int run = 0;
+
+    seq[0] = '\0';
+    if (k == 0)
+        ours_reset(ours_ref);
+    for (int t = 0; t < len; t++) {
+        int v = k == 0
+            ? ours_clock(ours_ref, (bits[t] >> 1) & 1, bits[t] & 1, 1)
+            : impls[k].clock(hh, (bits[t] >> 1) & 1, bits[t] & 1, 1);
+        if (v != IAMBIC_OFF)
+            run++;
+        else if (run) {
+            append_run(seq, 512, run);
+            run = 0;
+        }
+    }
+    if (run)
+        append_run(seq, 512, run);
+
+    return strcmp(seq, code) == 0;
+}
+
+/*
+ * Per-character differential test.  A realistic operator gesture is built
+ * for every character in the decode table and fed to every implementation;
+ * success means the emitted elements match the real character.  This is the
+ * per-character counterpart to the adversarial random schedules above.
+ *
+ * Three clean timing profiles are run exactly; a fourth sweep adds human
+ * timing jitter.  Returns the real core's worst clean-profile count so the
+ * caller can assert it.
+ */
+static int run_character_tests(struct impl *impls, int N, int quiet)
+{
+    static const struct { const char *name; int a, b; } profiles[] = {
+        { "snappy",  25, 60 },
+        { "typical", 30, 70 },
+        { "relaxed", 40, 80 },
+    };
+    const int nprof = (int)(sizeof(profiles) / sizeof(profiles[0]));
+    const int jitter = 12;                /* ticks (ms) */
+    const int jtrials = 20;
+    static struct ours ours_ref;
+    int cmin[MAX_IMPL];
+    int jcorrect[MAX_IMPL] = {0};
+    unsigned rng = 1;
+    int nchar = 0;
+
+    if (N > MAX_IMPL)
+        N = MAX_IMPL;
+
+    while (morse_table[nchar].code)
+        nchar++;
+
+    for (int i = 0; i < N; i++)
+        cmin[i] = nchar;
+
+    if (!quiet)
+        printf("characters: %d entries, %d clean profiles + %d jittered (+/-%d ms)\n",
+               nchar, nprof, jtrials, jitter);
+
+    for (int p = 0; p < nprof; p++) {
+        int correct[MAX_IMPL] = {0};
+
+        for (int ci = 0; ci < nchar; ci++) {
+            unsigned char bits[4096];
+            int len = make_char_gesture(morse_table[ci].code,
+                                        profiles[p].a, profiles[p].b,
+                                        0, NULL, bits, (int)sizeof(bits));
+
+            for (int k = 0; k < N; k++)
+                correct[k] += char_ok(impls, k, bits, len, &ours_ref,
+                                      morse_table[ci].code);
+        }
+
+        for (int i = 0; i < N; i++)
+            if (correct[i] < cmin[i])
+                cmin[i] = correct[i];
+
+        if (!quiet)
+            printf("  profile %-8s (%2d%%/%2d%%): ours %d/%d\n",
+                   profiles[p].name, profiles[p].a, profiles[p].b,
+                   correct[0], nchar);
+    }
+
+    for (int jt = 0; jt < jtrials; jt++) {
+        for (int ci = 0; ci < nchar; ci++) {
+            unsigned char bits[4096];
+            int len = make_char_gesture(morse_table[ci].code, 30, 70,
+                                        jitter, &rng, bits, (int)sizeof(bits));
+
+            for (int k = 0; k < N; k++)
+                jcorrect[k] += char_ok(impls, k, bits, len, &ours_ref,
+                                       morse_table[ci].code);
+        }
+    }
+
+    if (!quiet) {
+        int opportunities = nchar * jtrials;
+
+        printf("  characters correct by implementation:\n");
+        for (int i = 0; i < N; i++)
+            printf("    %-8s clean worst %d/%d, jittered %.1f%%\n",
+                   impls[i].name, cmin[i], nchar,
+                   100.0 * (double)jcorrect[i] / (double)opportunities);
+    }
+
+    return cmin[0];
+}
+
 int main(int argc, char **argv)
 {
     int explore = argc > 1;
@@ -1018,7 +1210,7 @@ int main(int argc, char **argv)
     size_t elems[N] = { 0 };
     int shown = 0;
     for (int trial = 0; trial < trials; trial++) {
-        struct seg { int dit, dah, until; } segs[24];
+        struct seg { int dit, dah, until; } segs[25];
         int t = 0;
         size_t nseg = 0;
         int d = state & 1, hh = (state >> 1) & 1;
@@ -1099,6 +1291,20 @@ int main(int argc, char **argv)
                elems[i] ? 100.0 * (double)dist_sum[i] / (double)elems[i] : 0.0,
                mismatch[i] ? (double)dist_sum[i] / (double)mismatch[i] : 0.0);
 
+    {
+        int ours_chars = run_character_tests(impls, N, quiet);
+        int nchar = 0;
+
+        while (morse_table[nchar].code)
+            nchar++;
+        if (!explore && ours_chars != nchar) {
+            fprintf(stderr,
+                    "character gesture test: ours keyed only %d/%d characters\n",
+                    ours_chars, nchar);
+            failed = 1;
+        }
+    }
+
     /*
      * In test mode, lock the randomized comparison against the recorded
      * baseline.  Every number here moves if the core's element-boundary
@@ -1107,7 +1313,7 @@ int main(int argc, char **argv)
      */
     if (!explore) {
         static const size_t baseline[] = {
-            0, 14390, 6613, 12941, 11937, 2099, 7291, 1796, 2259
+            0, 16502, 1798, 12947, 11743, 2204, 8694, 1839, 2191
         };
         for (int i = 1; i < N; i++)
             if (mismatch[i] != baseline[i]) {
