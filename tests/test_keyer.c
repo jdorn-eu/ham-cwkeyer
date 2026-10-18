@@ -200,6 +200,76 @@ static int run_iambic_tests(void)
 }
 
 /*
+ * Realistic operator usage: key every entry in the decode table with a
+ * plain single-lever ("slap") gesture and check both the emitted elements
+ * and the decoded character.  The iambic squeeze semantics are
+ * character-independent and covered by the N/A/C reference cases, so they
+ * are not repeated per character here.
+ */
+static void key_slap(const char *code, seq_t *s)
+{
+    keyer_t k;
+
+    memset(&k, 0, sizeof(k));
+    s->len = 0;
+    s->seq[0] = '\0';
+
+    for (const char *p = code; *p; p++) {
+        int dot = (*p == '.');
+
+        keyer_core_paddles(&k, dot, !dot);   /* close the element's lever */
+        emit(s, &k);
+        keyer_core_step(&k);                 /* end of mark */
+        keyer_core_paddles(&k, 0, 0);        /* release during the space */
+        keyer_core_step(&k);                 /* end of space */
+    }
+}
+
+static int run_alphabet_tests(void)
+{
+    int failures = 0;
+    int entries = 0;
+
+    for (int i = 0; morse_table[i].code; i++) {
+        char ch = morse_table[i].ch;
+        const char *code = morse_table[i].code;
+        seq_t s = {0};
+
+        entries++;
+
+        /* The decode table round-trips. */
+        if (morse_decode(code, strlen(code)) != ch) {
+            fprintf(stderr, "alphabet: '%c' (%s) did not decode back\n",
+                    ch, code);
+            failures++;
+        }
+
+        /* A single-lever gesture keys exactly that character. */
+        key_slap(code, &s);
+        if (strcmp(s.seq, code) != 0) {
+            fprintf(stderr, "alphabet: '%c' keyed as %s, want %s\n",
+                    ch, s.seq, code);
+            failures++;
+        }
+
+        /* And what was keyed decodes back to it. */
+        if (morse_decode(s.seq, s.len) != ch) {
+            fprintf(stderr, "alphabet: '%c' did not survive key+decode\n", ch);
+            failures++;
+        }
+    }
+
+    /* 26 letters + 10 digits + 12 punctuation marks. */
+    if (entries != 48) {
+        fprintf(stderr, "alphabet: decode table has %d entries, expected 48\n",
+                entries);
+        failures++;
+    }
+
+    return failures;
+}
+
+/*
  * RC filtering: the lever level is smoothed with the same first-order filter
  * as the 8044's external network, so short glitches and contact bounce never
  * reach the core as a full logic transition.
@@ -1160,6 +1230,7 @@ int main(void)
     weight_ms = 0.0;
 
     failures += run_iambic_tests();
+    failures += run_alphabet_tests();
     failures += run_debounce_tests();
     failures += run_evdev_tests();
     failures += run_press_order_tests();
