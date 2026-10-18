@@ -40,6 +40,16 @@ else
 WARNINGS = $(GCC_WARNINGS)
 endif
 
+# The differential test transcribes third-party keyer source verbatim, so it
+# is not ours to restructure.  GCC's level-4 -Wstrict-overflow reports false
+# positives on some of it that vary between GCC versions; clang has no such
+# warning.  The main code keeps the full warning set.
+ifneq ($(findstring clang,$(CC)),)
+DIFF_WARNINGS =
+else
+DIFF_WARNINGS = -Wno-strict-overflow
+endif
+
 CPPFLAGS += -DCWKEYER_VERSION='"$(VERSION)"'
 LDLIBS    = -lasound -lpthread -lm
 
@@ -65,7 +75,7 @@ test:
 ARGS ?=
 test-differential:
 	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) \
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(DIFF_WARNINGS) \
 	    -o "$$tmp/test_differential_thirdparty" \
 	    tests/test_differential_thirdparty.c $(LDLIBS) || exit 1; \
 	"$$tmp/test_differential_thirdparty" $(ARGS) || exit 1
