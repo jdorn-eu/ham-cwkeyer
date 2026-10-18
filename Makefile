@@ -7,7 +7,10 @@ CFLAGS   ?= -O2
 # Set WERROR= to build despite warnings (e.g. on an unknown toolchain).
 WERROR   ?= -Werror
 
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 1.0.0)
+# Release tags are named vX.Y.Z; strip the leading v so the reported
+# version and the dist tarball read X.Y.Z.  A release tarball has no git
+# history, so fall back to the VERSION file that `make dist` writes.
+VERSION  ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/null || cat VERSION 2>/dev/null || echo 0.0.0))
 # git archive only contains HEAD, so a -dirty suffix would name a tarball that
 # does not actually contain the working-tree changes.  Strip it for dist.
 DIST_VERSION ?= $(patsubst %-dirty,%,$(VERSION))
@@ -113,9 +116,12 @@ uninstall:
 	      "$(DESTDIR)$(MANDIR)/cw-mic-mix.1"
 
 dist:
-	git archive --prefix=ham-cwkeyer-$(DIST_VERSION)/ \
-	    -o ham-cwkeyer-$(DIST_VERSION).tar.gz HEAD
-	@echo "wrote ham-cwkeyer-$(DIST_VERSION).tar.gz"
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	dir=ham-cwkeyer-$(DIST_VERSION); \
+	git archive --format=tar --prefix="$$dir/" HEAD | tar -x -C "$$tmp" || exit 1; \
+	echo "$(DIST_VERSION)" > "$$tmp/$$dir/VERSION"; \
+	tar -czf "$$dir.tar.gz" -C "$$tmp" "$$dir"; \
+	echo "wrote $$dir.tar.gz"
 
 clean:
 	rm -f cwkeyer test_differential_libcw
