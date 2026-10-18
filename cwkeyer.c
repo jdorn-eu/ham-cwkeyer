@@ -96,6 +96,23 @@ static int do_grab = 1;
 static int do_decode = 0;
 
 /*
+ * Straight-key passthrough.  When set, the paddles key the sidetone directly
+ * (either lever closes the key) instead of driving the iambic core.  This is
+ * the software equivalent of the 8044ABM's separate MAN. KEY input.
+ */
+static int straight_mode = 0;
+static atomic_int straight_down = 0;
+
+/*
+ * Weighting: a constant time added to every mark and taken from the space
+ * that follows it, so the element period stays constant.  This matches the
+ * 8044ABM's RC weight control, which the application note describes as
+ * stretching each element "by a constant amount regardless of what speed is
+ * being used" -- i.e. not a ratio.  0 ms is strict ITU timing.
+ */
+static _Atomic double weight_ms = 0.0;
+
+/*
  * Paddle RC filter time constant.  This models the 8044's external 1M/0.01uF
  * input network, which is roughly 10 ms; 0 disables the filter.
  */
@@ -330,7 +347,7 @@ static int install_signal_handlers(void)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-        "usage: %s /dev/input/eventX [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode]\n"
+        "usage: %s /dev/input/eventX [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode] [straight]\n"
         "       %s --help | --version\n"
         "\n"
         "Examples:\n"
@@ -340,6 +357,7 @@ static void usage(const char *prog)
         "  %s /dev/input/eventX 25 700 COMMA DOT nograb\n"
         "  %s /dev/input/eventX nograb\n"
         "  %s /dev/input/event3 nograb decode\n"
+        "  %s /dev/input/eventX straight\n"
         "\n"
         "Known key names include:\n"
         "  LEFTCTRL RIGHTCTRL LEFTSHIFT RIGHTSHIFT LEFTALT RIGHTALT\n"
@@ -356,23 +374,30 @@ static void usage(const char *prog)
         "            newlines. Unknown symbols are ignored. A pause of\n"
         "            more than seven dits between characters prints a\n"
         "            space (the ITU word gap).\n"
+        "  straight  Use the paddles as a straight key: either lever\n"
+        "            keys the sidetone directly, with no iambic timing\n"
+        "            or memory. The RC paddle filter still applies.\n"
+        "            decode is ignored in this mode.\n"
         "  --help    Print this help and exit.\n"
         "  --version Print the version and exit.\n"
         "\n"
         "While running, terminal echo is disabled so keystrokes do not\n"
         "print in the window; the previous terminal state is restored\n"
         "on exit.  If stdin is readable, [ ] change speed, - = change\n"
-        "pitch, and 9 0 change the level.\n"
+        "pitch, 9 0 change the level, and , . change the weighting.\n"
         "\n"
         "Environment:\n"
         "  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
         "  CW_ALSA_LATENCY_US=20000   Requested ALSA latency in us\n"
         "  CW_KEYER_LEVEL=70          Sidetone level, percent of full scale\n"
         "  CW_KEYER_DEBOUNCE_MS=10    Paddle RC filter time constant, 0..50 ms\n"
+        "  CW_KEYER_WEIGHT_MS=0       Weighting, -25..25 ms; a constant time\n"
+        "                             added to each mark and taken from the\n"
+        "                             following space (0 is strict ITU timing)\n"
         "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
         "                             unset, it defaults to cw_out (created by\n"
         "                             cw-mic-mix.sh)\n",
-        prog, prog, prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static double parse_double_arg(const char *s,
@@ -421,6 +446,32 @@ static unsigned int parse_uint_env(const char *name,
     }
 
     return (unsigned int)v;
+}
+
+static double parse_double_env(const char *name,
+                               double def,
+                               double min_val,
+                               double max_val)
+{
+    const char *s = getenv(name);
+    char *end = NULL;
+    double v;
+
+    if (!s || !*s)
+        return def;
+
+    errno = 0;
+    v = strtod(s, &end);
+
+    if (errno != 0 || end == s || *end != '\0' ||
+        v < min_val || v > max_val) {
+        fprintf(stderr,
+                "warning: ignoring invalid %s='%s'; expected %.1f..%.1f\n",
+                name, s, min_val, max_val);
+        return def;
+    }
+
+    return v;
 }
 
 /*
@@ -1162,6 +1213,19 @@ static int64_t tone_ramp_ns(int64_t dit_ns)
     return dit_ns / 2 < 5000000LL ? dit_ns / 2 : 5000000LL;
 }
 
+/*
+ * The space following an element: the nominal one-dit gap reduced (or, for
+ * negative weighting, extended) by the weighting offset, never negative.
+ * The element period (mark + space) stays constant.
+ */
+static int64_t keyer_space_ns(void)
+{
+    int64_t dit_ns = (int64_t)llround(1.2e9 / ALOAD(wpm));
+    int64_t space_ns = dit_ns - (int64_t)llround(ALOAD(weight_ms) * 1e6);
+
+    return space_ns < 0 ? 0 : space_ns;
+}
+
 static int queue_mark(int64_t start_ns, int64_t duration_ns)
 {
     unsigned int write_pos = atomic_load_explicit(&mark_write, memory_order_relaxed);
@@ -1209,11 +1273,35 @@ static void *keyer_thread(void *arg)
     int64_t last_dit_ns = -1;
 
     while (keep_running()) {
+        /*
+         * Straight-key passthrough: poll the debounced paddles and publish
+         * the combined key state for the audio thread.  No iambic core, no
+         * mark queue, no decode.
+         */
+        if (straight_mode) {
+            int dit_latched = atomic_exchange_explicit(&dit_edge, 0,
+                                                       memory_order_relaxed);
+            int dah_latched = atomic_exchange_explicit(&dah_edge, 0,
+                                                       memory_order_relaxed);
+            int64_t now = mono_ns();
+            int dit = debounce_update(&keyer.dit_debounce,
+                                      ALOAD(dit_paddle) || dit_latched,
+                                      now, debounce_ns);
+            int dah = debounce_update(&keyer.dah_debounce,
+                                      ALOAD(dah_paddle) || dah_latched,
+                                      now, debounce_ns);
+
+            ASTORE(straight_down, dit || dah);
+            sleep_ns(200000LL);
+            continue;
+        }
+
         /* Read the live speed each time so runtime changes apply to the next
          * element without restarting the thread. */
         const int64_t dit_ns = (int64_t)llround(1.2e9 / wpm);
         const int64_t dah_ns = dit_ns * 3;
-        const int64_t space_ns = dit_ns;
+        const int64_t space_ns = keyer_space_ns();
+        const int64_t weight_ns = dit_ns - space_ns;
         /*
          * Idle gaps longer than seven dits between characters are word gaps,
          * per the ITU standard (1 dit between elements, 3 between characters,
@@ -1251,7 +1339,9 @@ static void *keyer_thread(void *arg)
         /* In an IN_* state: emit this mark. */
         int send_dit = keyer_symbol(&keyer);
         int64_t mark_start = mono_ns();
-        int64_t mark_duration = send_dit ? dit_ns : dah_ns;
+        int64_t mark_duration = (send_dit ? dit_ns : dah_ns) + weight_ns;
+        if (mark_duration < 1000000LL)
+            mark_duration = 1000000LL;   /* keep the tone audible */
         int64_t mark_end = mark_start + mark_duration;
 
         /*
@@ -1439,6 +1529,9 @@ typedef struct {
     double phase;
     double phase_inc;
     double amplitude;
+    double straight_gain;
+    double straight_step;
+    int straight_init;
 } audio_state_t;
 
 static uint64_t ns_to_frames(int64_t ns, unsigned int rate)
@@ -1451,8 +1544,45 @@ static void generate_audio(int16_t *buf, size_t frames,
 {
     const double two_pi = 2.0 * M_PI;
 
+    /*
+     * Straight-key passthrough: gate the tone directly from the paddle
+     * state instead of the mark queue.  A short raised-cosine ramp is
+     * applied by slewing the gain one step per frame, so key-down/key-up
+     * cannot click.  Level and pitch still follow the runtime controls.
+     */
+    if (straight_mode) {
+        uint64_t rf = ns_to_frames(tone_ramp_ns(
+            (int64_t)llround(1.2e9 / ALOAD(wpm))), rate);
+        if (!rf)
+            rf = 1;
+        state->straight_step = 1.0 / (double)rf;
+        state->phase_inc = two_pi * ALOAD(freq_hz) / rate;
+        state->amplitude = (ALOAD(volume_percent) * 32767.0) / 100.0;
+    }
+
     for (size_t i = 0; i < frames; i++, state->frame++) {
         double gain = 0.0;
+
+        if (straight_mode) {
+            double target = ALOAD(straight_down) ? 1.0 : 0.0;
+
+            if (state->straight_gain < target) {
+                state->straight_gain += state->straight_step;
+                if (state->straight_gain > target)
+                    state->straight_gain = target;
+            } else if (state->straight_gain > target) {
+                state->straight_gain -= state->straight_step;
+                if (state->straight_gain < target)
+                    state->straight_gain = target;
+            }
+
+            buf[i] = (int16_t)(state->straight_gain * state->amplitude *
+                               sin(state->phase));
+            state->phase += state->phase_inc;
+            if (state->phase >= two_pi)
+                state->phase -= two_pi;
+            continue;
+        }
 
         if (!state->has_pending && take_mark(&state->pending)) {
             state->has_pending = 1;
@@ -1480,8 +1610,7 @@ static void generate_audio(int16_t *buf, size_t frames,
             state->anchor_frame = state->frame;
             /* Speed, pitch, and level changes take effect at the start of
              * the next mark, so a change cannot step the tone mid-envelope. */
-            state->gap_frames = ns_to_frames(
-                (int64_t)llround(1.2e9 / ALOAD(wpm)), rate);
+            state->gap_frames = ns_to_frames(keyer_space_ns(), rate);
             state->ramp_frames = ns_to_frames(tone_ramp_ns(
                 (int64_t)llround(1.2e9 / ALOAD(wpm))), rate);
             if (state->ramp_frames > mark_frames / 2)
@@ -1578,13 +1707,30 @@ static void control_key(char key)
         changed = 1;
         break;
 
+    case ',':
+        value = ALOAD(weight_ms) - 1.0;
+        if (value < -25.0)
+            value = -25.0;
+        weight_ms = value;
+        changed = 1;
+        break;
+
+    case '.':
+        value = ALOAD(weight_ms) + 1.0;
+        if (value > 25.0)
+            value = 25.0;
+        weight_ms = value;
+        changed = 1;
+        break;
+
     default:
         break;
     }
 
     if (changed)
-        fprintf(stderr, "[%.1f WPM, %.0f Hz, %d%%]\n",
-                ALOAD(wpm), ALOAD(freq_hz), ALOAD(volume_percent));
+        fprintf(stderr, "[%.1f WPM, %.0f Hz, %d%%, weight %+.1f ms]\n",
+                ALOAD(wpm), ALOAD(freq_hz), ALOAD(volume_percent),
+                ALOAD(weight_ms));
 }
 
 static void *control_thread(void *arg)
@@ -1679,8 +1825,7 @@ static int audio_loop(snd_pcm_t *pcm, unsigned int actual_rate)
     int16_t buf[AUDIO_PERIOD_FRAMES];
 
     audio_state_t state = {0};
-    state.gap_frames = ns_to_frames(
-        (int64_t)llround(1.2e9 / ALOAD(wpm)), actual_rate);
+    state.gap_frames = ns_to_frames(keyer_space_ns(), actual_rate);
 
     int rc = 0;
 
@@ -1753,6 +1898,11 @@ int main(int argc, char **argv)
             continue;
         }
 
+        if (strcasecmp(argv[i], "straight") == 0) {
+            straight_mode = 1;
+            continue;
+        }
+
         switch (field) {
         case 0:
             wpm = parse_double_arg(argv[i], "wpm", 1.0, 300.0);
@@ -1793,6 +1943,7 @@ int main(int argc, char **argv)
     debounce_ms = parse_uint_env("CW_KEYER_DEBOUNCE_MS", 10, 0, 50);
     debounce_ns = (int64_t)debounce_ms * 1000000LL;
     volume_percent = (int)parse_uint_env("CW_KEYER_LEVEL", 70, 0, 100);
+    weight_ms = parse_double_env("CW_KEYER_WEIGHT_MS", 0.0, -25.0, 25.0);
 
     if (install_signal_handlers() < 0)
         return 1;
@@ -1804,17 +1955,23 @@ int main(int argc, char **argv)
 
     disable_terminal_echo();
 
+    if (straight_mode && do_decode)
+        fprintf(stderr,
+                "warning: decode is ignored in straight-key mode\n");
+
     fprintf(stderr,
             "CW keyer: %.2f WPM, %.2f Hz, dit code %d, dah code %d, %s, "
-            "Curtis mode B, RC filter %u ms, level %d%%%s\n",
+            "%s, RC filter %u ms, level %d%%, weight %+.1f ms%s\n",
             ALOAD(wpm),
             ALOAD(freq_hz),
             dit_code,
             dah_code,
             do_grab ? "EVIOCGRAB enabled" : "nograb",
+            straight_mode ? "straight-key passthrough" : "Curtis mode B",
             debounce_ms,
             ALOAD(volume_percent),
-            do_decode ? ", decode" : "");
+            ALOAD(weight_ms),
+            (do_decode && !straight_mode) ? ", decode" : "");
 
     pcm = open_audio(&actual_rate);
     if (!pcm) {

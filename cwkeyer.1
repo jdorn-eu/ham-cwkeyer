@@ -11,6 +11,7 @@ cwkeyer \- low-latency iambic CW sidetone keyer
 .RI [ dah_key ]
 .RI [ nograb ]
 .RI [ decode ]
+.RI [ straight ]
 .br
 .B cwkeyer
 .B \-\-help
@@ -21,7 +22,9 @@ cwkeyer \- low-latency iambic CW sidetone keyer
 .B cwkeyer
 reads an evdev keyboard-emulating paddle adapter and generates an ALSA
 sidetone. It implements the Curtis 8044 type B (Accu-keyer) iambic keyer,
-with dot/dash paddle memory, and can optionally decode the keyed text.
+with dot/dash paddle memory, and can optionally decode the keyed text. A
+.B straight
+mode passes the paddles through as a manual key instead.
 .PP
 The paddle inputs are filtered with a digital approximation of the 8044's
 external RC network. The recommended 1 M\(*W/0.01 \(*mF network has a time
@@ -66,6 +69,16 @@ the keyboard you are typing on.
 .B decode
 Print each keyed symbol decoded to text, without newlines. Unknown symbols
 are ignored, and a pause longer than seven dits prints a space.
+.TP
+.B straight
+Use the paddles as a straight key: either lever (or both, squeezed) keys
+the sidetone directly, with no iambic timing or memory. The RC paddle
+filter still applies. This is the software equivalent of the 8044ABM's
+separate
+.B MAN. KEY
+input. The
+.B decode
+option is ignored in this mode.
 .SH OPTIONS
 .TP
 .BR \-\-help ", " \-h
@@ -94,6 +107,17 @@ and
 Paddle RC filter time constant in milliseconds, 0\(en50 (default 10). The
 8044's recommended 1 M\(*W/0.01 \(*mF network is about 10 ms. Set to 0 to
 disable the filter; a shorter value gives a snappier response at high speed.
+.TP
+.B CW_KEYER_WEIGHT_MS
+Weighting in milliseconds, \(en25\(en25 (default 0, strict ITU timing). A
+constant time is added to every mark and removed from the space that
+follows it, so the element period and the character speed are unchanged.
+This matches the 8044ABM's RC weight control, which stretches elements by
+a fixed amount rather than a fixed ratio, so its relative effect depends on
+the keying speed. Can also be changed while running with
+.B ,
+and
+.BR . .
 .TP
 .B PULSE_SINK
 PulseAudio/PipeWire sink for the sidetone. If
@@ -125,6 +149,11 @@ Lower and higher pitch, 10 Hz per step.
 and
 .B 0
 Quieter and louder, 5 percent per step.
+.TP
+.B ,
+and
+.B .
+Lighter and heavier weighting, 1 ms per step.
 .PP
 Changes take effect on the next element.  The controls are read from
 standard input, not from the evdev paddle device, so avoid mapping a paddle
@@ -157,6 +186,9 @@ no audio problems prints nothing there.
 .TP
 .B cwkeyer /dev/input/event3 25 700 COMMA DOT nograb decode
 Remap the paddles, do not grab the device, and decode to text.
+.TP
+.B cwkeyer /dev/input/eventX straight
+Use the paddles as a straight key instead of an iambic keyer.
 .SH FILES
 .TP
 .I /dev/input/eventX

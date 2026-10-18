@@ -18,7 +18,11 @@ Paddle inputs are filtered with a digital approximation of the 8044's external R
 
 The keyer implements the type B (Accu-keyer) behaviour that most transceivers mean by "Curtis mode B". The dot and dash latches are set whenever their paddle closes and cleared at the end of that element if the paddle is open. Because the latches drive element selection, releasing a squeeze leaves the opposite latch set, so one extra element is keyed: squeeze and release during the second dash and you get `-.-.` (C). A held paddle repeats its element, a held squeeze alternates, and a tap of the opposite paddle during an element is remembered (the "N"/"A" tests). Type A is deliberately out of scope for this project.
 
-For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate ALSA actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range and can be changed at startup with `CW_KEYER_LEVEL` or while running (see below). The audio renderer enforces at least a one-dit silent gap; late delivery cannot shorten a mark, but scheduling delays or ALSA underruns can make a gap longer. ALSA buffering also adds audible latency, which is separate from the generated mark length.
+The `straight` startup option turns the iambic core off and passes either paddle (or both, squeezed) through as a manual key: the sidetone follows the contact with the same raised-cosine ramp, and the RC paddle filter still applies. This is the software equivalent of the 8044ABM's separate `MAN. KEY` input. `decode` is ignored in this mode.
+
+Optional weighting matches the 8044ABM's weight control, which the application note describes as stretching each element "by a constant amount regardless of what speed is being used". `CW_KEYER_WEIGHT_MS` (default `0`, range `-25`–`25`) adds that constant to every mark and removes it from the following space, so the element period and the character speed are unchanged: a `+10` setting makes marks heavier and spaces lighter, `-10` does the reverse. Because it is a fixed time, not a ratio, its relative effect grows with speed — exactly as the chip's RC network behaves — so a setting that sounds right at one speed may not at another. `0` is strict ITU timing.
+
+For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate ALSA actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range and can be changed at startup with `CW_KEYER_LEVEL` or while running (see below). The audio renderer enforces the intended inter-element gap (one dit, reduced or extended by the weighting setting); late delivery cannot shorten a mark, but scheduling delays or ALSA underruns can make a gap longer. ALSA buffering also adds audible latency, which is separate from the generated mark length.
 
 The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements.
 
@@ -91,6 +95,7 @@ First check for the correct device: `sudo libinput list-devices` or `sudo evtest
 ./cwkeyer /dev/input/eventX 25 700 COMMA DOT   # remap dit/dah keys
 ./cwkeyer /dev/input/event3 nograb             # keyboard instead of HRS vband adapter
 ./cwkeyer /dev/input/event3 nograb decode      # also print keyed morse as text
+./cwkeyer /dev/input/eventX straight            # paddles act as a straight key
 ```
 The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). Running `./cwkeyer` with no arguments or `./cwkeyer --help` lists the known key names; raw evdev key codes work too.
 
@@ -105,13 +110,15 @@ If stdin is a readable terminal or pipe, the keyer accepts single-key controls w
 - `[` / `]` — slower / faster (1 WPM per step)
 - `-` / `=` (or `+`) — lower / higher pitch (10 Hz per step)
 - `9` / `0` — quieter / louder (5% per step)
+- `,` / `.` — lighter / heavier weighting (1 ms per step)
 
-Speed, pitch, and level changes take effect on the next element. The startup values come from the command line, `CW_KEYER_LEVEL`, and the usual environment variables. These control keys are read from stdin, not from the evdev paddle device, so avoid remapping a paddle to one of them.
+Speed, pitch, level, and weighting changes take effect on the next element. The startup values come from the command line, `CW_KEYER_LEVEL`, and the usual environment variables. These control keys are read from stdin, not from the evdev paddle device, so avoid remapping a paddle to one of them.
 
 ## Environment
 - `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is set to `cw_out` by the keyer.
 - `CW_ALSA_LATENCY_US` Requested ALSA latency in microseconds. Default: `20000` (20 ms). ALSA may negotiate a different buffer/period; the achieved values are printed at startup. Smaller buffers may reduce latency but increase underrun risk.
 - `CW_KEYER_LEVEL` Sidetone level, percent of full scale, `0`–`100`. Default: `70`. The level can also be changed while running with `9` and `0`.
+- `CW_KEYER_WEIGHT_MS` Weighting, `-25`–`25` ms. Default: `0` (strict ITU timing). A constant time added to each mark and removed from the following space. The weighting can also be changed while running with `,` and `.`.
 - `CW_KEYER_DEBOUNCE_MS` Paddle RC filter time constant in milliseconds, `0`–`50`. Default: `10`; `0` disables the filter. The 8044's recommended 1 MΩ/0.01 µF network is about 10 ms. A press shorter than the filter's threshold time may not be recognized; lower the value for high-speed sending.
 - `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, it defaults to `cw_out`, the combined sink created by `cw-mic-mix.sh`. If you haven't run that script, set it explicitly to a real sink, e.g. `PULSE_SINK=$(pactl get-default-sink)`.
 

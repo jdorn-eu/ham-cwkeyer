@@ -108,3 +108,7 @@ coverage/
 *.gcov
 test_differential_libcw
 ham-cwkeyer-*.tar.gz
+
+# Cloned third-party research material
+research/
+cwkeyer-hayguen/

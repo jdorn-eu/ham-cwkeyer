@@ -711,11 +711,13 @@ static int run_control_tests(void)
     double saved_wpm = ALOAD(wpm);
     double saved_freq = ALOAD(freq_hz);
     int saved_volume = ALOAD(volume_percent);
+    double saved_weight = ALOAD(weight_ms);
     const double freq_max = (double)audio_rate / 2.0 - 1.0;
 
     wpm = 12.0;
     freq_hz = 800.0;
     volume_percent = 70;
+    weight_ms = 0.0;
 
     control_key(']');
     if (!nearly(ALOAD(wpm), 13.0))
@@ -765,6 +767,22 @@ static int run_control_tests(void)
     if (ALOAD(volume_percent) != 0)
         failures++;
 
+    weight_ms = 0.0;
+    control_key('.');
+    if (!nearly(ALOAD(weight_ms), 1.0))
+        failures++;
+    control_key(',');
+    if (!nearly(ALOAD(weight_ms), 0.0))
+        failures++;
+    weight_ms = 25.0;
+    control_key('.');
+    if (!nearly(ALOAD(weight_ms), 25.0))
+        failures++;
+    weight_ms = -25.0;
+    control_key(',');
+    if (!nearly(ALOAD(weight_ms), -25.0))
+        failures++;
+
     control_key('x');
     if (!nearly(ALOAD(wpm), 1.0) || !nearly(ALOAD(freq_hz), freq_max) ||
         ALOAD(volume_percent) != 0)
@@ -773,6 +791,7 @@ static int run_control_tests(void)
     wpm = saved_wpm;
     freq_hz = saved_freq;
     volume_percent = saved_volume;
+    weight_ms = saved_weight;
     unquiet_stderr(saved);
 
     return failures;
@@ -962,6 +981,91 @@ int main(void)
         failures++;
     }
     volume_percent = 70;
+
+    /*
+     * Straight-key passthrough: the tone follows the paddle gate.  While the
+     * gate is up the output is silent; while it is down the tone ramps up to
+     * the full level and holds; releasing ramps it back down.
+     */
+    straight_mode = 1;
+    ASTORE(straight_down, 0);
+    audio_state_t straight = {0};
+    render_blocked(samples, 4800, &straight, AUDIO_RATE);
+    for (size_t i = 0; i < 4800; i++) {
+        if (samples[i]) {
+            fprintf(stderr, "straight key leaked audio while up\n");
+            failures++;
+            break;
+        }
+    }
+
+    ASTORE(straight_down, 1);
+    render_blocked(samples, 4800, &straight, AUDIO_RATE);
+    int straight_peak = 0;
+    for (size_t i = 0; i < 4800; i++) {
+        int v = samples[i] < 0 ? -samples[i] : samples[i];
+        if (v > straight_peak)
+            straight_peak = v;
+    }
+    if (straight_peak < 22000 || straight_peak > 23500) {
+        fprintf(stderr, "straight key level is wrong (%d)\n", straight_peak);
+        failures++;
+    }
+
+    ASTORE(straight_down, 0);
+    render_blocked(samples, 4800, &straight, AUDIO_RATE);
+    int straight_tail = 0;
+    for (size_t i = 2400; i < 4800; i++) {
+        int v = samples[i] < 0 ? -samples[i] : samples[i];
+        if (v > straight_tail)
+            straight_tail = v;
+    }
+    if (straight_tail > 100) {
+        fprintf(stderr, "straight key did not release (%d)\n", straight_tail);
+        failures++;
+    }
+    straight_mode = 0;
+
+    /*
+     * Weighting: a constant offset added to the mark and taken from the
+     * following space, so the element period is unchanged.  0 is strict
+     * ITU timing.
+     */
+    wpm = 12;                       /* dit = 100 ms = 4800 frames */
+    weight_ms = 0.0;
+    if (keyer_space_ns() != 100000000LL) {
+        fprintf(stderr, "unweighted space is not one dit\n");
+        failures++;
+    }
+    weight_ms = 20.0;
+    if (keyer_space_ns() != 80000000LL) {
+        fprintf(stderr, "positive weight did not shorten the space\n");
+        failures++;
+    }
+    weight_ms = -20.0;
+    if (keyer_space_ns() != 120000000LL) {
+        fprintf(stderr, "negative weight did not lengthen the space\n");
+        failures++;
+    }
+    weight_ms = 500.0;
+    if (keyer_space_ns() != 0) {
+        fprintf(stderr, "weight did not clamp the space at zero\n");
+        failures++;
+    }
+
+    /* +20 ms: mark 120 ms, space 80 ms, period still 200 ms. */
+    weight_ms = 20.0;
+    audio_state_t weighted = {0};
+    queue_mark(start_ns, 120000000LL);
+    queue_mark(start_ns + 200000000LL, 120000000LL);
+    render_blocked(samples, 256, &weighted, AUDIO_RATE);
+    if (weighted.mark_end != 5760 || weighted.next_start != 9600) {
+        fprintf(stderr, "weighted mark/space timing is wrong (%llu/%llu)\n",
+                (unsigned long long)weighted.mark_end,
+                (unsigned long long)weighted.next_start);
+        failures++;
+    }
+    weight_ms = 0.0;
 
     failures += run_iambic_tests();
     failures += run_debounce_tests();
