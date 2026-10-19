@@ -20,7 +20,7 @@ The keyer implements the type B (Accu-keyer) behaviour that most transceivers me
 
 The `straight` startup option turns the iambic core off and passes either paddle (or both, squeezed) through as a manual key: the sidetone follows the contact with the same raised-cosine ramp, and the RC paddle filter still applies. This is the software equivalent of the 8044ABM's separate `MAN. KEY` input. `decode` is ignored in this mode.
 
-Optional weighting matches the 8044ABM's weight control, which the application note describes as stretching each element "by a constant amount regardless of what speed is being used". `CW_KEYER_WEIGHT_MS` (default `0`, range `-25`–`25`) adds that constant to every mark and removes it from the following space, so the element period and the character speed are unchanged: a `+10` setting makes marks heavier and spaces lighter, `-10` does the reverse. Because it is a fixed time, not a ratio, its relative effect grows with speed — exactly as the chip's RC network behaves — so a setting that sounds right at one speed may not at another. `0` is strict ITU timing.
+Optional weighting matches the 8044ABM's weight control, which the application note describes as stretching each element "by a constant amount regardless of what speed is being used". `CW_KEYER_WEIGHT_MS` (default `0`, range `-25`–`25`) adds that constant to every mark and removes it from the following space, so the element period and the character speed are unchanged: a `+10` setting makes marks heavier and spaces lighter, `-10` does the reverse. Because it is a fixed time, not a ratio, its relative effect grows with speed — exactly as the chip's RC network behaves — so a setting that sounds right at one speed may not at another. `0` is strict ITU timing. The supported speed range is 1–40 WPM: even at 40 WPM a dit lasts 30 ms, leaving at least 5 ms for both the mark and space at the maximum ±25 ms weighting. Faster internal renderer stress tests are not a promise that the 10 ms input filter can capture very short high-speed taps.
 
 For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate ALSA actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range and can be changed at startup with `CW_KEYER_LEVEL` or while running (see below). The audio renderer enforces the intended inter-element gap (one dit, reduced or extended by the weighting setting); late delivery cannot shorten a mark, but scheduling delays or ALSA underruns can make a gap longer. ALSA buffering also adds audible latency, which is separate from the generated mark length.
 
@@ -109,7 +109,7 @@ With `decode`, each keyed symbol is printed as text as you key, without newlines
 
 If stdin is a readable terminal or pipe, the keyer accepts single-key controls while it is running:
 
-- `[` / `]` — slower / faster (1 WPM per step)
+- `[` / `]` — slower / faster (1 WPM per step, limited to 1–40 WPM)
 - `-` / `=` (or `+`) — lower / higher pitch (10 Hz per step)
 - `9` / `0` — quieter / louder (5% per step)
 - `,` / `.` — lighter / heavier weighting (1 ms per step)

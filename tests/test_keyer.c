@@ -734,7 +734,7 @@ static const char *g_bad_arg;
 
 static void call_parse_wpm(void)
 {
-    parse_double_arg(g_bad_arg, "wpm", 1.0, 300.0);
+    parse_double_arg(g_bad_arg, "wpm", 1.0, MAX_WPM);
 }
 
 static void call_lookup(void)
@@ -796,17 +796,20 @@ static int run_arg_tests(void)
     unsigned long bits[NBITS(KEY_MAX + 1)];
 
     /* Valid doubles. */
-    if (!nearly(parse_double_arg("25", "wpm", 1.0, 300.0), 25.0))
+    if (!nearly(parse_double_arg("25", "wpm", 1.0, MAX_WPM), 25.0))
         failures++;
-    if (!nearly(parse_double_arg("12.5", "wpm", 1.0, 300.0), 12.5))
+    if (!nearly(parse_double_arg("12.5", "wpm", 1.0, MAX_WPM), 12.5))
         failures++;
-    if (!nearly(parse_double_arg("1", "wpm", 1.0, 300.0), 1.0))
+    if (!nearly(parse_double_arg("1", "wpm", 1.0, MAX_WPM), 1.0))
+        failures++;
+
+    if (!nearly(parse_double_arg("40", "wpm", 1.0, MAX_WPM), MAX_WPM))
         failures++;
 
     /* Invalid doubles call exit(1). */
     g_bad_arg = "0";
     failures += !child_exits_with(1, call_parse_wpm);
-    g_bad_arg = "301";
+    g_bad_arg = "40.1";
     failures += !child_exits_with(1, call_parse_wpm);
     g_bad_arg = "abc";
     failures += !child_exits_with(1, call_parse_wpm);
@@ -888,9 +891,9 @@ static int run_control_tests(void)
     if (!nearly(ALOAD(wpm), 12.0))
         failures++;
 
-    wpm = 300.0;
+    wpm = MAX_WPM;
     control_key(']');
-    if (!nearly(ALOAD(wpm), 300.0))
+    if (!nearly(ALOAD(wpm), MAX_WPM))
         failures++;
     wpm = 1.0;
     control_key('[');
@@ -1093,7 +1096,7 @@ int main(void)
         failures++;
     }
 
-    /* At the maximum supported speed, use 2 ms ramps within a 4 ms dit. */
+    /* Renderer stress test above the supported operator-speed range. */
     wpm = 300;
     audio_state_t fast = {0};
     fast.gap_frames = 192;
@@ -1209,11 +1212,18 @@ int main(void)
         fprintf(stderr, "negative weight did not lengthen the space\n");
         failures++;
     }
-    weight_ms = 500.0;
-    if (keyer_space_ns() != 0) {
-        fprintf(stderr, "weight did not clamp the space at zero\n");
+    wpm = MAX_WPM;                 /* dit = 30 ms */
+    weight_ms = 25.0;
+    if (keyer_space_ns() != 5000000LL) {
+        fprintf(stderr, "max-speed positive weight did not leave a 5 ms space\n");
         failures++;
     }
+    weight_ms = -25.0;
+    if (keyer_space_ns() != 55000000LL) {
+        fprintf(stderr, "max-speed negative weight did not leave a 5 ms dit\n");
+        failures++;
+    }
+    wpm = 12;
 
     /* +20 ms: mark 120 ms, space 80 ms, period still 200 ms. */
     weight_ms = 20.0;

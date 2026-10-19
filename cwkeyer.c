@@ -81,6 +81,8 @@ enum {
     AUDIO_PERIOD_FRAMES = 128
 };
 
+/* At 40 WPM a dit is 30 ms: even +/-25 ms weighting stays positive. */
+#define MAX_WPM 40.0
 static _Atomic double wpm = 12.0;
 static _Atomic double freq_hz = 800.0;
 
@@ -1730,8 +1732,8 @@ static void control_key(char key)
 
     case ']':
         value = ALOAD(wpm) + 1.0;
-        if (value > 300.0)
-            value = 300.0;
+        if (value > MAX_WPM)
+            value = MAX_WPM;
         wpm = value;
         changed = 1;
         break;
@@ -1967,7 +1969,7 @@ int main(int argc, char **argv)
 
         switch (field) {
         case 0:
-            wpm = parse_double_arg(argv[i], "wpm", 1.0, 300.0);
+            wpm = parse_double_arg(argv[i], "wpm", 1.0, MAX_WPM);
             break;
 
         case 1:

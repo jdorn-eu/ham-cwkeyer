@@ -40,7 +40,9 @@ to find it. A normal keyboard is usually
 .IR /dev/input/event3 .
 .TP
 .I wpm
-Keying speed in words per minute (default 12, range 1\(en300).
+Keying speed in words per minute (default 12, range 1\(en40).
+At 40 WPM, the full \(+-25 ms weighting range still leaves positive
+marks and spaces.
 .TP
 .I freq_hz
 Sidetone frequency in hertz (default 800).
@@ -136,7 +138,7 @@ accepts these single-key controls while it is running:
 .B [
 and
 .B ]
-Slower and faster, 1 WPM per step.
+Slower and faster, 1 WPM per step (limited to 1\(en40 WPM).
 .TP
 .B -
 and
