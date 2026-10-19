@@ -208,7 +208,9 @@ and
 Lighter and heavier weighting, 1 ms per step.
 .PP
 Pending keys in a pipe are consumed before the keyer treats its closed
-writer as end-of-input. Changes take effect on the next element. The controls are read from
+writer as end-of-input. Changes take effect on the next element. On a
+terminal the current settings are shown on a single status line that is
+rewritten in place rather than appended line by line. The controls are read from
 standard input, not from the evdev paddle device, so avoid mapping a paddle
 to one of these keys.
 .SH SIGNALS

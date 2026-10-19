@@ -2394,6 +2394,48 @@ static void generate_audio(int16_t *buf, size_t frames,
  * They only work when stdin is a readable terminal or pipe.  Startup values
  * come from the command line and environment as before.
  */
+/*
+ * Runtime status display.  On a terminal the line is rewritten in place so
+ * repeated control-key changes do not scroll the screen away.
+ */
+static void write_control_status(FILE *out, const char *status, int is_tty,
+                                 size_t *last_len)
+{
+    size_t len = strlen(status);
+
+    if (!is_tty) {
+        fprintf(out, "%s\n", status);
+        return;
+    }
+
+    fputc('\r', out);
+    fputs(status, out);
+    for (size_t i = len; i < *last_len; i++)
+        fputc(' ', out);
+
+    *last_len = len;
+}
+
+static size_t control_status_len = 0;
+
+static void print_control_status(const char *status)
+{
+    int is_tty = isatty(STDERR_FILENO);
+
+    write_control_status(stderr, status, is_tty, &control_status_len);
+    if (is_tty)
+        fflush(stderr);
+}
+
+static void finish_control_status(void)
+{
+    if (control_status_len == 0)
+        return;
+
+    fputc('\n', stderr);
+    control_status_len = 0;
+}
+
 static void control_key(char key)
 {
     int changed = 0;
@@ -2470,10 +2512,15 @@ static void control_key(char key)
         break;
     }
 
-    if (changed)
-        fprintf(stderr, "[%.1f WPM, %.0f Hz, %d%%, weight %+.1f ms]\n",
-                ALOAD(wpm), ALOAD(freq_hz), ALOAD(volume_percent),
-                ALOAD(weight_ms));
+    if (changed) {
+        char status[128];
+
+        snprintf(status, sizeof(status),
+                 "[%.1f WPM, %.0f Hz, %d%%, weight %+.1f ms]",
+                 ALOAD(wpm), ALOAD(freq_hz), ALOAD(volume_percent),
+                 ALOAD(weight_ms));
+        print_control_status(status);
+    }
 }
 
 static void *control_thread(void *arg)
@@ -2800,6 +2847,8 @@ int main(int argc, char **argv)
 
     snd_pcm_close(pcm);
     restore_terminal();
+
+    finish_control_status();
 
     /* Only mention the audio health if something actually went wrong. */
     if (audio_underruns || keyer_late_elements)

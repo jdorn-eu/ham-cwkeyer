@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Runtime control feedback is rewritten on a single status line on a
+  terminal instead of appending a new line for every change.
 - `cwkeyer` with no arguments on an interactive terminal now runs the same
   tap-to-select setup as `--setup`. Without a terminal it still prints the
   usage text, so scripts and CI are unaffected.

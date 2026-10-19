@@ -1305,6 +1305,44 @@ static int run_control_tests(void)
     return failures;
 }
 
+/* The status line rewrites itself in place on a terminal. */
+static int run_control_status_tests(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    size_t len = 0;
+    size_t last = 0;
+    FILE *out = open_memstream(&buf, &len);
+
+    if (!out)
+        return 1;
+
+    write_control_status(out, "[12.0 WPM]", 1, &last);
+    write_control_status(out, "[9.0 WPM]", 1, &last);
+    fclose(out);
+
+    if (!strstr(buf, "\r[12.0 WPM]") ||
+        !strstr(buf, "\r[9.0 WPM] ") ||
+        strchr(buf, '\n') != NULL)
+        failures++;
+    free(buf);
+
+    buf = NULL;
+    len = 0;
+    last = 0;
+    out = open_memstream(&buf, &len);
+    if (!out)
+        return failures + 1;
+
+    write_control_status(out, "[12.0 WPM]", 0, &last);
+    fclose(out);
+    if (strcmp(buf, "[12.0 WPM]\n") != 0)
+        failures++;
+    free(buf);
+
+    return failures;
+}
+
 /* A pipe with queued data and a closed writer reports POLLIN | POLLHUP.
  * The controls must be consumed before the control thread exits. */
 static int run_control_pipe_test(void)
@@ -1648,6 +1686,7 @@ int main(void)
     failures += run_tap_tests();
     failures += run_prompt_tests();
     failures += run_control_tests();
+    failures += run_control_status_tests();
     failures += run_control_pipe_test();
     failures += run_driver_tests();
     failures += run_main_tests();

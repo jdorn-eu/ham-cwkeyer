@@ -132,7 +132,7 @@ If stdin is a readable terminal or pipe, the keyer accepts single-key controls w
 - `9` / `0` — quieter / louder (5% per step)
 - `,` / `.` — lighter / heavier weighting (1 ms per step)
 
-A pipe's final controls are read even if its writer has already closed. Speed, pitch, level, and weighting changes take effect on the next element. The startup values come from the command line, `CW_KEYER_LEVEL`, and the usual environment variables. These control keys are read from stdin, not from the evdev paddle device, so avoid remapping a paddle to one of them.
+A pipe's final controls are read even if its writer has already closed. Speed, pitch, level, and weighting changes take effect on the next element. On a terminal, the current settings are shown on a single status line that is rewritten in place rather than appended line by line. The startup values come from the command line, `CW_KEYER_LEVEL`, and the usual environment variables. These control keys are read from stdin, not from the evdev paddle device, so avoid remapping a paddle to one of them.
 
 ## Environment
 - `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is set to `cw_out` by the keyer.
