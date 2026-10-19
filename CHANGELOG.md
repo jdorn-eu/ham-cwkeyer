@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   At 40 WPM the full ±25 ms weighting range retains positive mark and space
   durations; higher speeds previously broke the promised element period.
 
+### Fixed
+
+- Consume pending runtime controls from a pipe before reacting to a
+  simultaneous `POLLHUP` when its writer closes.
+
 ## [1.0.1] - 2026-10-18
 
 ### Fixed

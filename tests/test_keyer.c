@@ -962,6 +962,52 @@ static int run_control_tests(void)
     return failures;
 }
 
+/* A pipe with queued data and a closed writer reports POLLIN | POLLHUP.
+ * The controls must be consumed before the control thread exits. */
+static int run_control_pipe_test(void)
+{
+    int fds[2];
+    int saved_stdin;
+    pthread_t tid;
+    int failures = 0;
+    int saved_err = quiet_stderr();
+
+    if (pipe(fds) < 0) {
+        unquiet_stderr(saved_err);
+        return 1;
+    }
+    saved_stdin = dup(STDIN_FILENO);
+    if (saved_stdin < 0 || write(fds[1], "]]", 2) != 2 ||
+        dup2(fds[0], STDIN_FILENO) < 0) {
+        if (saved_stdin >= 0)
+            close(saved_stdin);
+        close(fds[0]);
+        close(fds[1]);
+        unquiet_stderr(saved_err);
+        return 1;
+    }
+    close(fds[0]);
+    close(fds[1]);
+
+    wpm = 12.0;
+    ASTORE(running, 1);
+    stop_requested = 0;
+    if (pthread_create(&tid, NULL, control_thread, NULL) != 0)
+        failures++;
+    else
+        pthread_join(tid, NULL);
+    if (!nearly(ALOAD(wpm), 14.0))
+        failures++;
+
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+    wpm = 12.0;
+    unquiet_stderr(saved_err);
+    if (failures)
+        fprintf(stderr, "control: closed pipe lost pending keys\n");
+    return failures;
+}
+
 /* ---------------- main() startup paths ---------------- */
 
 static int run_main_tests(void)
@@ -1247,6 +1293,7 @@ int main(void)
     failures += run_decode_tests();
     failures += run_arg_tests();
     failures += run_control_tests();
+    failures += run_control_pipe_test();
     failures += run_driver_tests();
     failures += run_main_tests();
 

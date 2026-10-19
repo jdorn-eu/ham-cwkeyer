@@ -157,7 +157,8 @@ and
 .B .
 Lighter and heavier weighting, 1 ms per step.
 .PP
-Changes take effect on the next element.  The controls are read from
+Pending keys in a pipe are consumed before the keyer treats its closed
+writer as end-of-input. Changes take effect on the next element. The controls are read from
 standard input, not from the evdev paddle device, so avoid mapping a paddle
 to one of these keys.
 .SH SIGNALS

@@ -1821,10 +1821,13 @@ static void *control_thread(void *arg)
         if (pr == 0)
             continue;
 
-        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
-            break;
-        if (!(pfd.revents & POLLIN))
+        /* Pipes can report POLLIN and POLLHUP together after the writer
+         * closes. Drain readable controls before treating the hangup as EOF. */
+        if (!(pfd.revents & POLLIN)) {
+            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+                break;
             continue;
+        }
 
         n = read(STDIN_FILENO, buf, sizeof(buf));
         if (n < 0) {
