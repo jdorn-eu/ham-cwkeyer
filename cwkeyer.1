@@ -18,6 +18,9 @@ cwkeyer \- low-latency iambic CW sidetone keyer
 .br
 .B cwkeyer
 .B \-\-version
+.br
+.B cwkeyer
+.B \-\-list\-devices
 .SH DESCRIPTION
 .B cwkeyer
 reads an evdev keyboard-emulating paddle adapter and generates an ALSA
@@ -36,7 +39,9 @@ The evdev device to read. Use
 .BR evtest (8)
 or
 .BR libinput (1)
-to find it. A normal keyboard is usually
+to find it, or run
+.B cwkeyer \-\-list\-devices
+for a quick list of readable input devices. A normal keyboard is usually
 .IR /dev/input/event3 .
 .TP
 .I wpm
@@ -88,6 +93,25 @@ Print a short usage message and exit.
 .TP
 .BR \-\-version ", " \-V
 Print the version and exit.
+.TP
+.BR \-\-list\-devices ", " \-L
+List every readable
+.B /dev/input/event*
+device, grouped as
+.BR unknown ,
+.BR keyboard ,
+or
+.BR paddle .
+Groups are ordered so paddles come last, nearest the shell prompt, and the
+devices in each group are sorted by event number. A device that reports
+the default LEFTCTRL/RIGHTCTRL paddle keys is called out. The category
+names are colored only when standard output is a terminal; set
+.B NO_COLOR
+to disable them. The
+.B keyboard
+or
+.B paddle
+guess is a hint only and is not used to select a device.
 .SH ENVIRONMENT
 .TP
 .B CW_ALSA_DEVICE
@@ -130,6 +154,10 @@ and this is unset or empty, it defaults to
 .BR cw_out ,
 the combined sink created by
 .BR cw-mic-mix (1).
+.TP
+.B NO_COLOR
+If set, do not color the category names printed by
+.BR \-\-list\-devices .
 .SH RUNTIME CONTROLS
 If standard input is a readable terminal or pipe,
 .B cwkeyer

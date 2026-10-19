@@ -12,7 +12,8 @@
  *   make   (or: gcc -O2 -Wall -Wextra -o cwkeyer cwkeyer.c -lasound -lpthread -lm)
  *
  * Run:
- *   ./cwkeyer /dev/input/eventX [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode]
+ *   ./cwkeyer --list-devices
+ *   ./cwkeyer /dev/input/eventX [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode] [straight]
  *
  * Examples:
  *   ./cwkeyer /dev/input/eventX
@@ -46,6 +47,7 @@
 #include <alsa/asoundlib.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <glob.h>
 #include <linux/input.h>
 #include <math.h>
 #include <poll.h>
@@ -348,7 +350,7 @@ static void usage(const char *prog)
 {
     fprintf(stderr,
         "usage: %s /dev/input/eventX [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode] [straight]\n"
-        "       %s --help | --version\n"
+        "       %s --help | --version | --list-devices\n"
         "\n"
         "Examples:\n"
         "  %s /dev/input/eventX\n"
@@ -380,6 +382,10 @@ static void usage(const char *prog)
         "            decode is ignored in this mode.\n"
         "  --help    Print this help and exit.\n"
         "  --version Print the version and exit.\n"
+        "  --list-devices, -L\n"
+        "            List readable /dev/input/event* devices, grouped as\n"
+        "            unknown, keyboard, or paddle, and exit. Colors are\n"
+        "            used only on a terminal; set NO_COLOR to disable them.\n"
         "\n"
         "While running, terminal echo is disabled so keystrokes do not\n"
         "print in the window; the previous terminal state is restored\n"
@@ -891,6 +897,312 @@ static int bit_is_set(unsigned int bit, const unsigned long *array)
 {
     return !!(array[bit / BITS_PER_ULONG] &
               (1UL << (bit % BITS_PER_ULONG)));
+}
+
+/*
+ * Input-device discovery for --list-devices (and, later, the setup wizard).
+ *
+ * classify_input_device() is deliberately a pure function of the device
+ * name and its evdev key bitmap so it can be unit tested; the syscall layer
+ * around it stays thin.  The classification is a hint, never a hard policy:
+ * the user can always override it.
+ */
+typedef enum {
+    DEVICE_KIND_UNKNOWN = 0,
+    DEVICE_KIND_KEYBOARD,
+    DEVICE_KIND_PADDLE
+} device_kind_t;
+
+static const char *device_kind_name(device_kind_t kind)
+{
+    switch (kind) {
+    case DEVICE_KIND_KEYBOARD:
+        return "keyboard";
+    case DEVICE_KIND_PADDLE:
+        return "paddle";
+    case DEVICE_KIND_UNKNOWN:
+    default:
+        return "unknown";
+    }
+}
+
+/*
+ * A general-purpose keyboard reports a full typing keyset; a dedicated CW
+ * paddle adapter normally reports only its paddle keys.  The name is used
+ * only as a corroborating hint when the key bitmap is inconclusive.
+ */
+static device_kind_t classify_input_device(const char *name,
+                                           const unsigned long *keys)
+{
+    int typing_keys = bit_is_set(KEY_A, keys) &&
+                      bit_is_set(KEY_SPACE, keys) &&
+                      bit_is_set(KEY_ENTER, keys);
+
+    if (typing_keys)
+        return DEVICE_KIND_KEYBOARD;
+
+    if (name && (strcasestr(name, "keyboard") || strcasestr(name, "kbd")))
+        return DEVICE_KIND_KEYBOARD;
+
+    /* Both default paddle keys at once is the strong, reliable signal. */
+    if (bit_is_set(KEY_LEFTCTRL, keys) &&
+        bit_is_set(KEY_RIGHTCTRL, keys))
+        return DEVICE_KIND_PADDLE;
+
+    if (name && (strcasestr(name, "keyer") || strcasestr(name, "paddle") ||
+                 strcasestr(name, "vband") || strcasestr(name, "morse")))
+        return DEVICE_KIND_PADDLE;
+
+    return DEVICE_KIND_UNKNOWN;
+}
+
+static int device_has_default_paddles(const unsigned long *keys)
+{
+    return bit_is_set(KEY_LEFTCTRL, keys) &&
+           bit_is_set(KEY_RIGHTCTRL, keys);
+}
+
+/* One row per device, printed under its group header. */
+static void print_device_line(FILE *out, const char *path, const char *name,
+                              int default_paddles)
+{
+    fprintf(out, "  %s  \"%s\"%s\n",
+            path, (name && *name) ? name : "(unnamed)",
+            default_paddles ?
+                "  (default paddle keys: LEFTCTRL RIGHTCTRL)" : "");
+}
+
+static void print_unreadable_line(FILE *out, const char *path, int errnum)
+{
+    fprintf(out, "  %s  [unreadable: %s]\n", path, strerror(errnum));
+}
+
+static int stream_supports_color(FILE *out)
+{
+    const char *term;
+
+    if (getenv("NO_COLOR") != NULL)
+        return 0;
+
+    term = getenv("TERM");
+    if (term && strcmp(term, "dumb") == 0)
+        return 0;
+
+    return isatty(fileno(out)) == 1;
+}
+
+static const char *device_kind_color(device_kind_t kind, int use_color)
+{
+    if (!use_color)
+        return "";
+
+    switch (kind) {
+    case DEVICE_KIND_PADDLE:
+        return "\033[1;32m";   /* bold green */
+    case DEVICE_KIND_KEYBOARD:
+        return "\033[36m";     /* cyan */
+    case DEVICE_KIND_UNKNOWN:
+    default:
+        return "\033[2m";      /* dim */
+    }
+}
+
+static void print_device_group(FILE *out, device_kind_t kind, int use_color)
+{
+    fputs(device_kind_color(kind, use_color), out);
+    fputs(device_kind_name(kind), out);
+    if (use_color)
+        fputs("\033[0m", out);
+    fputc('\n', out);
+}
+
+/* The numeric suffix of /dev/input/eventN, or -1 for anything else. */
+static long device_event_number(const char *path)
+{
+    const char *base = strrchr(path, '/');
+    char *end = NULL;
+    long number;
+
+    base = base ? base + 1 : path;
+
+    if (strncmp(base, "event", 5) != 0)
+        return -1;
+
+    number = strtol(base + 5, &end, 10);
+    if (end == base + 5 || *end != '\0' || number < 0)
+        return -1;
+
+    return number;
+}
+
+typedef struct {
+    char path[64];
+    char name[256];
+    device_kind_t kind;
+    int default_paddles;
+    int fd;              /* -1 when the device could not be opened */
+    int unreadable;
+    int errnum;
+} input_device_t;
+
+static void copy_device_path(char *dest, size_t size, const char *path)
+{
+    size_t len = strlen(path);
+
+    if (len >= size)
+        len = size - 1;
+
+    memcpy(dest, path, len);
+    dest[len] = '\0';
+}
+
+/*
+ * Open every /dev/input/event* and keep the descriptor for later polling.
+ * The caller owns the returned array and releases it with
+ * close_input_devices().
+ */
+static int discover_input_devices(input_device_t **out, size_t *out_count)
+{
+    glob_t g;
+    input_device_t *devices;
+    size_t count = 0;
+    int rc;
+
+    *out = NULL;
+    *out_count = 0;
+
+    rc = glob("/dev/input/event*", 0, NULL, &g);
+    if (rc == GLOB_NOMATCH) {
+        globfree(&g);
+        return 0;
+    }
+
+    if (rc != 0) {
+        fprintf(stderr, "cannot list /dev/input/event*: %s\n",
+                rc == GLOB_NOSPACE ? "out of memory" : "glob failed");
+        return -1;
+    }
+
+    devices = calloc(g.gl_pathc ? g.gl_pathc : 1, sizeof(*devices));
+    if (!devices) {
+        fprintf(stderr, "out of memory listing input devices\n");
+        globfree(&g);
+        return -1;
+    }
+
+    for (size_t i = 0; i < g.gl_pathc; i++) {
+        const char *path = g.gl_pathv[i];
+        input_device_t *d = &devices[count];
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+
+        copy_device_path(d->path, sizeof(d->path), path);
+        d->fd = fd;
+
+        if (fd < 0) {
+            d->kind = DEVICE_KIND_UNKNOWN;
+            d->unreadable = 1;
+            d->errnum = errno;
+            count++;
+            continue;
+        }
+
+        if (ioctl(fd, EVIOCGNAME(sizeof(d->name)), d->name) < 0)
+            snprintf(d->name, sizeof(d->name), "(unnamed)");
+
+        unsigned long keys[NBITS(KEY_MAX + 1)] = {0};
+        int has_keys = ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys) >= 0;
+        d->kind = has_keys ? classify_input_device(d->name, keys)
+                           : DEVICE_KIND_UNKNOWN;
+        d->default_paddles = has_keys && device_has_default_paddles(keys);
+        count++;
+    }
+
+    globfree(&g);
+    *out = devices;
+    *out_count = count;
+    return 0;
+}
+
+static void close_input_devices(input_device_t *devices, size_t count)
+{
+    if (!devices)
+        return;
+
+    for (size_t i = 0; i < count; i++) {
+        if (devices[i].fd >= 0)
+            close(devices[i].fd);
+    }
+
+    free(devices);
+}
+
+/*
+ * Unknown devices first, then keyboards, then paddles, and within a group
+ * in natural event-number order (event2 before event10).
+ */
+static int compare_input_devices(const void *a, const void *b)
+{
+    const input_device_t *ea = a;
+    const input_device_t *eb = b;
+    long na;
+    long nb;
+
+    if (ea->kind != eb->kind)
+        return ea->kind < eb->kind ? -1 : 1;
+
+    na = device_event_number(ea->path);
+    nb = device_event_number(eb->path);
+    if (na != nb)
+        return na < nb ? -1 : 1;
+
+    return strcmp(ea->path, eb->path);
+}
+
+static int list_input_devices(FILE *out)
+{
+    input_device_t *devices;
+    size_t count;
+    int unreadable = 0;
+    int current_kind = -1;
+    int use_color;
+
+    if (discover_input_devices(&devices, &count) < 0)
+        return -1;
+
+    if (count == 0) {
+        fprintf(out, "no /dev/input/event* devices found\n");
+        close_input_devices(devices, count);
+        return 0;
+    }
+
+    use_color = stream_supports_color(out);
+    qsort(devices, count, sizeof(*devices), compare_input_devices);
+
+    for (size_t i = 0; i < count; i++) {
+        if ((int)devices[i].kind != current_kind) {
+            if (current_kind >= 0)
+                fputc('\n', out);
+            current_kind = (int)devices[i].kind;
+            print_device_group(out, devices[i].kind, use_color);
+        }
+
+        if (devices[i].unreadable) {
+            print_unreadable_line(out, devices[i].path, devices[i].errnum);
+            unreadable++;
+        } else {
+            print_device_line(out, devices[i].path, devices[i].name,
+                              devices[i].default_paddles);
+        }
+    }
+
+    if (unreadable) {
+        fprintf(out,
+                "\n%d device(s) could not be read; check your udev rules "
+                "(see the README).\n", unreadable);
+    }
+
+    close_input_devices(devices, count);
+    return 0;
 }
 
 static void clear_input_state(void)
@@ -1908,6 +2220,12 @@ int main(int argc, char **argv)
         (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
         printf("cwkeyer %s\n", CWKEYER_VERSION);
         return 0;
+    }
+
+    if (argc == 2 &&
+        (strcmp(argv[1], "--list-devices") == 0 ||
+         strcmp(argv[1], "-L") == 0)) {
+        return list_input_devices(stdout) == 0 ? 0 : 1;
     }
 
     if (argc < 2) {

@@ -867,6 +867,144 @@ static int run_arg_tests(void)
     return failures;
 }
 
+/* ---------------- input-device listing ---------------- */
+
+static void set_test_key(unsigned long *bits, unsigned int code)
+{
+    bits[code / BITS_PER_ULONG] |= 1UL << (code % BITS_PER_ULONG);
+}
+
+static void set_test_device(input_device_t *dev, const char *path,
+                            device_kind_t kind)
+{
+    memset(dev, 0, sizeof(*dev));
+    snprintf(dev->path, sizeof(dev->path), "%s", path);
+    dev->kind = kind;
+    dev->fd = -1;
+}
+
+static int run_device_list_tests(void)
+{
+    int failures = 0;
+    unsigned long keys[NBITS(KEY_MAX + 1)];
+    input_device_t a;
+    input_device_t b;
+    input_device_t p;
+    input_device_t u;
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *out;
+
+    /* A full keyboard stays a keyboard even though it also reports the
+     * default paddle keys. */
+    memset(keys, 0, sizeof(keys));
+    set_test_key(keys, KEY_A);
+    set_test_key(keys, KEY_SPACE);
+    set_test_key(keys, KEY_ENTER);
+    set_test_key(keys, KEY_LEFTCTRL);
+    set_test_key(keys, KEY_RIGHTCTRL);
+    if (classify_input_device("Logitech USB Keyboard", keys) !=
+        DEVICE_KIND_KEYBOARD)
+        failures++;
+    if (!device_has_default_paddles(keys))
+        failures++;
+
+    /* A dedicated adapter reports the paddle keys but not a typing set. */
+    memset(keys, 0, sizeof(keys));
+    set_test_key(keys, KEY_LEFTCTRL);
+    set_test_key(keys, KEY_RIGHTCTRL);
+    if (classify_input_device("HRS VBand Keyer", keys) !=
+        DEVICE_KIND_PADDLE)
+        failures++;
+    if (!device_has_default_paddles(keys))
+        failures++;
+
+    /* Name hints resolve an otherwise inconclusive bitmap. */
+    memset(keys, 0, sizeof(keys));
+    if (classify_input_device("AT Translated Set 2 keyboard", keys) !=
+        DEVICE_KIND_KEYBOARD)
+        failures++;
+    if (classify_input_device("WB9KZY Paddle", keys) != DEVICE_KIND_PADDLE)
+        failures++;
+
+    /* A stray KEY_DOT (common on media/AVRCP devices) must not look like a
+     * paddle on its own. */
+    memset(keys, 0, sizeof(keys));
+    set_test_key(keys, KEY_DOT);
+    set_test_key(keys, KEY_PLAYPAUSE);
+    if (classify_input_device("AirPods Pro (AVRCP)", keys) !=
+        DEVICE_KIND_UNKNOWN)
+        failures++;
+
+    /* Unrelated devices are neither. */
+    memset(keys, 0, sizeof(keys));
+    set_test_key(keys, KEY_POWER);
+    if (classify_input_device("Power Button", keys) != DEVICE_KIND_UNKNOWN)
+        failures++;
+    if (device_has_default_paddles(keys))
+        failures++;
+
+    if (strcmp(device_kind_name(DEVICE_KIND_KEYBOARD), "keyboard") != 0 ||
+        strcmp(device_kind_name(DEVICE_KIND_PADDLE), "paddle") != 0 ||
+        strcmp(device_kind_name(DEVICE_KIND_UNKNOWN), "unknown") != 0)
+        failures++;
+
+    /* Natural event-number order, not the lexicographic glob order. */
+    if (device_event_number("/dev/input/event2") != 2 ||
+        device_event_number("/dev/input/event20") != 20 ||
+        device_event_number("/dev/input/event3x") != -1)
+        failures++;
+
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    memset(&p, 0, sizeof(p));
+    memset(&u, 0, sizeof(u));
+    set_test_device(&a, "/dev/input/event20", DEVICE_KIND_KEYBOARD);
+    set_test_device(&b, "/dev/input/event2", DEVICE_KIND_KEYBOARD);
+    set_test_device(&p, "/dev/input/event1", DEVICE_KIND_PADDLE);
+    set_test_device(&u, "/dev/input/event1", DEVICE_KIND_UNKNOWN);
+
+    if (compare_input_devices(&b, &a) >= 0)      /* event2 < event20 */
+        failures++;
+    if (compare_input_devices(&b, &p) >= 0)      /* keyboard < paddle */
+        failures++;
+    if (compare_input_devices(&u, &b) >= 0)      /* unknown < keyboard */
+        failures++;
+
+    /* Colors are disabled for an explicit request, and the escape code is
+     * present when they are on. */
+    if (device_kind_color(DEVICE_KIND_PADDLE, 0)[0] != '\0')
+        failures++;
+    if (strstr(device_kind_color(DEVICE_KIND_PADDLE, 1), "\033[") == NULL)
+        failures++;
+    setenv("NO_COLOR", "1", 1);
+    if (stream_supports_color(stdout) != 0)
+        failures++;
+    unsetenv("NO_COLOR");
+
+    /* The row, group, and unreadable formats are stable. */
+    out = open_memstream(&buf, &len);
+    if (!out) {
+        failures++;
+        return failures;
+    }
+
+    print_device_group(out, DEVICE_KIND_PADDLE, 0);
+    print_device_line(out, "/dev/input/event21", "HRS VBand Keyer", 1);
+    print_device_line(out, "/dev/input/event20", "HRS VBand Keyer 2", 0);
+    print_unreadable_line(out, "/dev/input/event9", EACCES);
+    fclose(out);
+
+    if (!strstr(buf, "paddle") ||
+        !strstr(buf, "HRS VBand Keyer") ||
+        !strstr(buf, "LEFTCTRL") ||
+        !strstr(buf, "[unreadable:"))
+        failures++;
+
+    free(buf);
+    return failures;
+}
+
 /* ---------------- runtime controls ---------------- */
 
 static int run_control_tests(void)
@@ -1023,9 +1161,11 @@ static int run_main_tests(void)
     char p7[] = "DOT";
     char p8[] = "nograb";
     char p9[] = "decode";
+    char p10[] = "--list-devices";
 
     char *help_argv[] = {p0, p1, NULL};
     char *ver_argv[] = {p0, p2, NULL};
+    char *list_argv[] = {p0, p10, NULL};
     char *noargs_argv[] = {p0, NULL};
     char *run_argv[] = {p0, p3, p4, p5, p6, p7, p8, p9, NULL};
 
@@ -1038,6 +1178,8 @@ static int run_main_tests(void)
     if (cwkeyer_program_main(2, help_argv) != 0)
         failures++;
     if (cwkeyer_program_main(2, ver_argv) != 0)
+        failures++;
+    if (cwkeyer_program_main(2, list_argv) != 0)
         failures++;
     if (cwkeyer_program_main(1, noargs_argv) != 1)
         failures++;
@@ -1292,6 +1434,7 @@ int main(void)
     failures += run_press_order_tests();
     failures += run_decode_tests();
     failures += run_arg_tests();
+    failures += run_device_list_tests();
     failures += run_control_tests();
     failures += run_control_pipe_test();
     failures += run_driver_tests();

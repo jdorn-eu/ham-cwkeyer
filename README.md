@@ -40,7 +40,7 @@ The build is deliberately strict by default: `-Werror` plus a broad warning set 
 - `tests/test_evdev.c` — `evdev_thread()` fed through a FIFO standing in for the input device: press/release update the paddle state, the press edge is latched, and state is cleared on exit.
 - `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation.
 
-The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `lookup_key`), runtime control keys, and a real `main()` startup/failure/shutdown path.
+The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `lookup_key`), input-device classification for `--list-devices`, runtime control keys, and a real `main()` startup/failure/shutdown path.
 
 There is also an optional differential test against the real UnixCW libcw keyer: `make test-libcw` drives libcw's iambic graph and our mode B core with identical random paddle schedules and compares the element sequences (200k trials, no mismatches). It needs a built unixcw checkout; set `LIBCW_DIR` if it is not at `../unixcw-code`. It is not part of `make test` or CI because of that external dependency.
 
@@ -99,6 +99,13 @@ First check for the correct device: `sudo libinput list-devices` or `sudo evtest
 ./cwkeyer /dev/input/event3 nograb decode      # also print keyed morse as text
 ./cwkeyer /dev/input/eventX straight            # paddles act as a straight key
 ```
+If you do not know which device is your adapter, `./cwkeyer --list-devices`
+groups the readable `/dev/input/event*` devices into `unknown`, `keyboard`,
+and `paddle` categories in that order, so paddles appear last and stay near
+the shell prompt. Each group is sorted by device number, and devices that
+report the default LEFTCTRL/RIGHTCTRL paddle keys are marked. The category
+names are colored when stdout is a terminal; set `NO_COLOR` to turn that
+off.
 The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). Running `./cwkeyer` with no arguments or `./cwkeyer --help` lists the known key names; raw evdev key codes work too.
 
 While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty). Terminal input queued while the keyer runs is discarded on exit, so keystrokes do not reappear at the shell prompt. Ctrl+C, SIGTERM, SIGHUP, and SIGQUIT stop it cleanly and restore the terminal and the evdev grab. Ctrl+Z suspends it properly: a dedicated thread releases the terminal and grab before stopping and re-establishes them on resume, so the shell stays usable while it is suspended. Ordinary stop/suspend operations run outside asynchronous signal handlers and are serialized with device and terminal startup/shutdown. A fatal crash (for example SIGSEGV) still takes the kernel's default action; terminal restoration cannot be guaranteed after a crash. If needed, run `stty sane` to repair the tty.
@@ -123,6 +130,7 @@ A pipe's final controls are read even if its writer has already closed. Speed, p
 - `CW_KEYER_WEIGHT_MS` Weighting, `-25`–`25` ms. Default: `0` (strict ITU timing). A constant time added to each mark and removed from the following space. The weighting can also be changed while running with `,` and `.`.
 - `CW_KEYER_DEBOUNCE_MS` Paddle RC filter time constant in milliseconds, `0`–`50`. Default: `10`; `0` disables the filter. The 8044's recommended 1 MΩ/0.01 µF network is about 10 ms. A press shorter than the filter's threshold time may not be recognized; lower the value for high-speed sending.
 - `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, it defaults to `cw_out`, the combined sink created by `cw-mic-mix.sh`. If you haven't run that script, set it explicitly to a real sink, e.g. `PULSE_SINK=$(pactl get-default-sink)`.
+- `NO_COLOR` If set, `--list-devices` does not color the category names.
 
 ## Combine with mic input
 

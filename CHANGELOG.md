@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `--list-devices` (`-L`): list readable `/dev/input/event*` devices with a
+  keyboard/paddle guess and a note when the default LEFTCTRL/RIGHTCTRL
+  paddle keys are reported. Devices are grouped (unknown, keyboard, paddle)
+  and sorted by event number within each group; the group names are colored
+  on a terminal unless `NO_COLOR` is set. The guess is a hint for humans,
+  not a device selection policy.
+
 ### Changed
 
 - Limit user-selectable keying speed to 1–40 WPM, including runtime controls.
