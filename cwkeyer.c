@@ -391,6 +391,10 @@ static void usage(const char *prog)
         "            weighting. A device that looks like a keyboard\n"
         "            defaults to nograb.\n"
         "\n"
+        "With no arguments on an interactive terminal, cwkeyer runs the\n"
+        "same tap-to-select setup and then starts with the defaults.\n"
+        "Without a terminal it prints this help.\n"
+        "\n"
         "While running, terminal echo is disabled so keystrokes do not\n"
         "print in the window; the previous terminal state is restored\n"
         "on exit.  If stdin is readable, [ ] change speed, - = change\n"
@@ -2586,6 +2590,10 @@ int main(int argc, char **argv)
             fprintf(stderr, "--setup needs an interactive terminal on stdin\n");
             return 1;
         }
+        if (run_setup_wizard(setup_path, sizeof(setup_path)) < 0)
+            return 1;
+        device_path = setup_path;
+    } else if (argc == 1 && isatty(STDIN_FILENO)) {
         if (run_setup_wizard(setup_path, sizeof(setup_path)) < 0)
             return 1;
         device_path = setup_path;
