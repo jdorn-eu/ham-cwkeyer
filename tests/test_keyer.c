@@ -1039,6 +1039,32 @@ static int run_tap_tests(void)
         which != 99)
         failures++;
 
+    /* Non-key events must not be treated as a timeout: the wait has to keep
+     * polling until the deadline or a real press. */
+    e = make_event(EV_REL, REL_X, 1);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    int64_t before = mono_ns();
+    which = 99;
+    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 80, &which, &code) != 0 ||
+        which != 99)
+        failures++;
+    if (mono_ns() - before < 30000000LL)
+        failures++;
+
+    /* A non-key event followed by a real press is still a press. */
+    e = make_event(EV_REL, REL_X, 1);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    e = make_event(EV_KEY, KEY_COMMA, 1);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    which = 99;
+    code = 0;
+    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 100, &which, &code) != 1 ||
+        which != 1 || code != KEY_COMMA)
+        failures++;
+
     /* A press on the second device reports its index and key code. */
     e = make_event(EV_KEY, KEY_COMMA, 1);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))

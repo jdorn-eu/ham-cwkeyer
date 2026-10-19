@@ -1208,47 +1208,71 @@ static int wait_for_paddle_press(const input_device_t *devices, size_t count,
         nfds++;
     }
 
-    rc = poll(pfds, nfds, timeout_ms);
-    if (rc < 0) {
-        free(pfds);
-        free(indices);
-        return -1;
-    }
+    int64_t deadline = mono_ns() + (int64_t)timeout_ms * 1000000LL;
 
-    if (rc == 0) {
-        free(pfds);
-        free(indices);
-        return 0;
-    }
+    for (;;) {
+        int64_t remaining_ns = deadline - mono_ns();
+        int wait_ms;
 
-    for (size_t i = 0; i < nfds; i++) {
-        if (!(pfds[i].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)))
-            continue;
+        if (remaining_ns <= 0) {
+            free(pfds);
+            free(indices);
+            return 0;
+        }
 
-        for (;;) {
-            struct input_event ev;
-            ssize_t got = read(pfds[i].fd, &ev, sizeof(ev));
+        wait_ms = (int)((remaining_ns + 999999LL) / 1000000LL);
 
-            if (got == (ssize_t)sizeof(ev)) {
-                if (ev.type == EV_KEY && ev.value == 1) {
-                    *which = indices[i];
-                    *code = (int)ev.code;
-                    free(pfds);
-                    free(indices);
-                    return 1;
-                }
+        rc = poll(pfds, nfds, wait_ms);
+        if (rc < 0) {
+            if (errno == EINTR)
                 continue;
+            free(pfds);
+            free(indices);
+            return -1;
+        }
+
+        if (rc == 0) {
+            free(pfds);
+            free(indices);
+            return 0;
+        }
+
+        for (size_t i = 0; i < nfds; i++) {
+            if (!(pfds[i].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)))
+                continue;
+
+            for (;;) {
+                struct input_event ev;
+                ssize_t got = read(pfds[i].fd, &ev, sizeof(ev));
+
+                if (got == (ssize_t)sizeof(ev)) {
+                    if (ev.type == EV_KEY && ev.value == 1) {
+                        *which = indices[i];
+                        *code = (int)ev.code;
+                        free(pfds);
+                        free(indices);
+                        return 1;
+                    }
+                    continue;
+                }
+
+                if (got < 0 && errno == EINTR)
+                    continue;
+                if (got < 0 && errno == EAGAIN)
+                    break;
+
+                /* EOF or a real read error: stop polling this device. */
+                pfds[i].fd = -1;
+                break;
             }
 
-            if (got < 0 && errno == EINTR)
-                continue;
-            break;
+            if (pfds[i].fd >= 0 &&
+                (pfds[i].revents & (POLLERR | POLLHUP | POLLNVAL)))
+                pfds[i].fd = -1;
         }
-    }
 
-    free(pfds);
-    free(indices);
-    return 0;
+        /* Only non-press events arrived; keep waiting until the deadline. */
+    }
 }
 
 #define SETUP_TAP_TIMEOUT_MS 15000
