@@ -1164,6 +1164,16 @@ static void drain_device_events(const input_device_t *devices, size_t count)
 }
 
 /*
+ * A paddle adapter sends keyboard-style key codes.  The BTN_* range belongs
+ * to mice, touchpads, and gamepads, which are commonly present on the same
+ * machine and must not be mistaken for a paddle tap.
+ */
+static int is_paddle_press(unsigned short code)
+{
+    return code < BTN_MISC;
+}
+
+/*
  * Wait for the next key press on the discovered devices. `only` is a device
  * index for the second (dah) tap, or SIZE_MAX to watch every device.
  * Autorepeat and key releases are ignored. Returns 1 on a press, 0 on
@@ -1246,7 +1256,8 @@ static int wait_for_paddle_press(const input_device_t *devices, size_t count,
                 ssize_t got = read(pfds[i].fd, &ev, sizeof(ev));
 
                 if (got == (ssize_t)sizeof(ev)) {
-                    if (ev.type == EV_KEY && ev.value == 1) {
+                    if (ev.type == EV_KEY && ev.value == 1 &&
+                        is_paddle_press(ev.code)) {
                         *which = indices[i];
                         *code = (int)ev.code;
                         free(pfds);

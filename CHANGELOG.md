@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a terminal unless `NO_COLOR` is set. The guess is a hint for humans,
   not a device selection policy.
 
+### Fixed
+
+- `--setup` no longer reports the tap timeout immediately because another
+  input device (for example a mouse) had a pending non-key event. The wait
+  now keeps polling until the deadline or a real key press.
+- `--setup` ignores pointer and gamepad buttons (`BTN_*` codes), so a
+  stray mouse click cannot be mistaken for a paddle tap.
+
 ### Changed
 
 - Limit user-selectable keying speed to 1–40 WPM, including runtime controls.

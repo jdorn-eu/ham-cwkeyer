@@ -1065,6 +1065,15 @@ static int run_tap_tests(void)
         which != 1 || code != KEY_COMMA)
         failures++;
 
+    /* Pointer/gamepad buttons are EV_KEY too, but must not count as taps. */
+    e = make_event(EV_KEY, BTN_LEFT, 1);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    which = 99;
+    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
+        which != 99)
+        failures++;
+
     /* A press on the second device reports its index and key code. */
     e = make_event(EV_KEY, KEY_COMMA, 1);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
