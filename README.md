@@ -107,7 +107,9 @@ and `paddle` categories in that order, so paddles appear last and stay near
 the shell prompt. Each group is sorted by device number, and devices that
 report the default LEFTCTRL/RIGHTCTRL paddle keys are marked. The category
 names are colored when stdout is a terminal; set `NO_COLOR` to turn that
-off.
+off. Known adapters, currently the HRS PaddleAdapter, are also recognized by
+USB vendor/product ID and marked in the listing; the table in `cwkeyer.c`
+is a one-line addition per device.
 `./cwkeyer --setup` is the guided version: it asks you to tap the dot lever
 and then the dash lever, learns the device and both key codes, and starts
 with the defaults. It does not need the `/dev/input/eventX` name. A device

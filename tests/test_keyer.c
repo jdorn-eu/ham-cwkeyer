@@ -903,7 +903,7 @@ static int run_device_list_tests(void)
     set_test_key(keys, KEY_ENTER);
     set_test_key(keys, KEY_LEFTCTRL);
     set_test_key(keys, KEY_RIGHTCTRL);
-    if (classify_input_device("Logitech USB Keyboard", keys) !=
+    if (classify_input_device("Logitech USB Keyboard", 0, 0, keys) !=
         DEVICE_KIND_KEYBOARD)
         failures++;
     if (!device_has_default_paddles(keys))
@@ -911,15 +911,23 @@ static int run_device_list_tests(void)
 
     /* The HRS PaddleAdapter advertises a full keyboard keyset, so its
      * name has to win over the capability check. */
-    if (classify_input_device("hamradio.solutions PaddleAdapter", keys) !=
+    if (classify_input_device("hamradio.solutions PaddleAdapter", 0, 0, keys) !=
         DEVICE_KIND_PADDLE)
+        failures++;
+
+    /* A known vendor/product pair wins even over the name. */
+    if (classify_input_device("Logitech USB Keyboard", 0x04d8, 0x01a6,
+                              keys) != DEVICE_KIND_PADDLE)
+        failures++;
+    if (known_paddle_label(0x04d8, 0x01a6) == NULL ||
+        known_paddle_label(0, 0) != NULL)
         failures++;
 
     /* A dedicated adapter reports the paddle keys but not a typing set. */
     memset(keys, 0, sizeof(keys));
     set_test_key(keys, KEY_LEFTCTRL);
     set_test_key(keys, KEY_RIGHTCTRL);
-    if (classify_input_device("HRS VBand Keyer", keys) !=
+    if (classify_input_device("HRS VBand Keyer", 0, 0, keys) !=
         DEVICE_KIND_PADDLE)
         failures++;
     if (!device_has_default_paddles(keys))
@@ -927,10 +935,10 @@ static int run_device_list_tests(void)
 
     /* Name hints resolve an otherwise inconclusive bitmap. */
     memset(keys, 0, sizeof(keys));
-    if (classify_input_device("AT Translated Set 2 keyboard", keys) !=
+    if (classify_input_device("AT Translated Set 2 keyboard", 0, 0, keys) !=
         DEVICE_KIND_KEYBOARD)
         failures++;
-    if (classify_input_device("WB9KZY Paddle", keys) != DEVICE_KIND_PADDLE)
+    if (classify_input_device("WB9KZY Paddle", 0, 0, keys) != DEVICE_KIND_PADDLE)
         failures++;
 
     /* A stray KEY_DOT (common on media/AVRCP devices) must not look like a
@@ -938,14 +946,14 @@ static int run_device_list_tests(void)
     memset(keys, 0, sizeof(keys));
     set_test_key(keys, KEY_DOT);
     set_test_key(keys, KEY_PLAYPAUSE);
-    if (classify_input_device("AirPods Pro (AVRCP)", keys) !=
+    if (classify_input_device("AirPods Pro (AVRCP)", 0, 0, keys) !=
         DEVICE_KIND_UNKNOWN)
         failures++;
 
     /* Unrelated devices are neither. */
     memset(keys, 0, sizeof(keys));
     set_test_key(keys, KEY_POWER);
-    if (classify_input_device("Power Button", keys) != DEVICE_KIND_UNKNOWN)
+    if (classify_input_device("Power Button", 0, 0, keys) != DEVICE_KIND_UNKNOWN)
         failures++;
     if (device_has_default_paddles(keys))
         failures++;
@@ -996,14 +1004,17 @@ static int run_device_list_tests(void)
     }
 
     print_device_group(out, DEVICE_KIND_PADDLE, 0);
-    print_device_line(out, "/dev/input/event21", "HRS VBand Keyer", 1);
-    print_device_line(out, "/dev/input/event20", "HRS VBand Keyer 2", 0);
+    print_device_line(out, "/dev/input/event21", "HRS VBand Keyer", 1,
+                      "HRS PaddleAdapter");
+    print_device_line(out, "/dev/input/event20", "HRS VBand Keyer 2", 0,
+                      NULL);
     print_unreadable_line(out, "/dev/input/event9", EACCES);
     fclose(out);
 
     if (!strstr(buf, "paddle") ||
         !strstr(buf, "HRS VBand Keyer") ||
         !strstr(buf, "LEFTCTRL") ||
+        !strstr(buf, "known: HRS PaddleAdapter") ||
         !strstr(buf, "[unreadable:"))
         failures++;
 

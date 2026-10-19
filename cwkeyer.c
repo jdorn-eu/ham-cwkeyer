@@ -935,16 +935,50 @@ static const char *device_kind_name(device_kind_t kind)
 }
 
 /*
+ * Known USB paddle adapters, matched by vendor/product ID.  Add new
+ * devices here; the label is shown by --list-devices and in the setup
+ * summary.
+ */
+typedef struct {
+    unsigned short vendor;
+    unsigned short product;
+    const char *label;
+} known_paddle_t;
+
+static const known_paddle_t known_paddles[] = {
+    /* hamradio.solutions / HRS PaddleAdapter (VBand). */
+    {0x04d8, 0x01a6, "HRS PaddleAdapter"},
+};
+
+static const char *known_paddle_label(unsigned short vendor,
+                                      unsigned short product)
+{
+    for (size_t i = 0; i < sizeof(known_paddles) / sizeof(known_paddles[0]);
+         i++) {
+        if (known_paddles[i].vendor == vendor &&
+            known_paddles[i].product == product)
+            return known_paddles[i].label;
+    }
+
+    return NULL;
+}
+
+/*
  * A general-purpose keyboard reports a full typing keyset; a dedicated CW
  * paddle adapter normally reports only its paddle keys.  The name is used
  * only as a corroborating hint when the key bitmap is inconclusive.
  */
 static device_kind_t classify_input_device(const char *name,
+                                           unsigned short vendor,
+                                           unsigned short product,
                                            const unsigned long *keys)
 {
     int typing_keys = bit_is_set(KEY_A, keys) &&
                       bit_is_set(KEY_SPACE, keys) &&
                       bit_is_set(KEY_ENTER, keys);
+
+    if (known_paddle_label(vendor, product) != NULL)
+        return DEVICE_KIND_PADDLE;
 
     /* The HRS PaddleAdapter advertises a full keyboard keyset, so a strong
      * name hint must win over the capability check. */
@@ -974,12 +1008,15 @@ static int device_has_default_paddles(const unsigned long *keys)
 
 /* One row per device, printed under its group header. */
 static void print_device_line(FILE *out, const char *path, const char *name,
-                              int default_paddles)
+                              int default_paddles, const char *known_label)
 {
-    fprintf(out, "  %s  \"%s\"%s\n",
+    fprintf(out, "  %s  \"%s\"%s",
             path, (name && *name) ? name : "(unnamed)",
             default_paddles ?
                 "  (default paddle keys: LEFTCTRL RIGHTCTRL)" : "");
+    if (known_label)
+        fprintf(out, "  (known: %s)", known_label);
+    fputc('\n', out);
 }
 
 static void print_unreadable_line(FILE *out, const char *path, int errnum)
@@ -1048,6 +1085,8 @@ static long device_event_number(const char *path)
 typedef struct {
     char path[64];
     char name[256];
+    unsigned short vendor;
+    unsigned short product;
     device_kind_t kind;
     int default_paddles;
     int fd;              /* -1 when the device could not be opened */
@@ -1119,9 +1158,16 @@ static int discover_input_devices(input_device_t **out, size_t *out_count)
         if (ioctl(fd, EVIOCGNAME(sizeof(d->name)), d->name) < 0)
             snprintf(d->name, sizeof(d->name), "(unnamed)");
 
+        struct input_id id;
+        if (ioctl(fd, EVIOCGID, &id) == 0) {
+            d->vendor = id.vendor;
+            d->product = id.product;
+        }
+
         unsigned long keys[NBITS(KEY_MAX + 1)] = {0};
         int has_keys = ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys) >= 0;
-        d->kind = has_keys ? classify_input_device(d->name, keys)
+        d->kind = has_keys ? classify_input_device(d->name, d->vendor,
+                                                    d->product, keys)
                            : DEVICE_KIND_UNKNOWN;
         d->default_paddles = has_keys && device_has_default_paddles(keys);
         count++;
@@ -1574,11 +1620,16 @@ static int run_setup_wizard(char *device_path, size_t path_size)
         break;
     }
 
-    fprintf(stderr, "\n  %s●%s Using %s%s%s (%s), detected as %s\n",
+    const char *known = known_paddle_label(devices[selected].vendor,
+                                           devices[selected].product);
+    fprintf(stderr, "\n  %s●%s Using %s%s%s (%s), detected as %s",
             CLR(use_color, ANSI_GREEN), CLR(use_color, ANSI_RESET),
             CLR(use_color, ANSI_BOLD), devices[selected].name,
             CLR(use_color, ANSI_RESET), devices[selected].path,
             device_kind_name(devices[selected].kind));
+    if (known)
+        fprintf(stderr, " (%s)", known);
+    fputc('\n', stderr);
 
     int default_grab = devices[selected].kind == DEVICE_KIND_PADDLE;
     int grab = prompt_yes_no("Take exclusive control of this device?",
@@ -1666,8 +1717,10 @@ static int list_input_devices(FILE *out)
             print_unreadable_line(out, devices[i].path, devices[i].errnum);
             unreadable++;
         } else {
+            const char *known = known_paddle_label(devices[i].vendor,
+                                                   devices[i].product);
             print_device_line(out, devices[i].path, devices[i].name,
-                              devices[i].default_paddles);
+                              devices[i].default_paddles, known);
         }
     }
 
