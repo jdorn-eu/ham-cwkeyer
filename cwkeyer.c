@@ -1290,6 +1290,16 @@ static int wait_for_paddle_press(const input_device_t *devices, size_t count,
     }
 }
 
+/* Setup output styling.  Colors are dropped when stderr is not a terminal. */
+#define ANSI_RESET  "\033[0m"
+#define ANSI_BOLD   "\033[1m"
+#define ANSI_DIM    "\033[2m"
+#define ANSI_GREEN  "\033[1;32m"
+#define ANSI_CYAN   "\033[36m"
+#define ANSI_YELLOW "\033[33m"
+#define ANSI_TITLE  "\033[1;36m"
+#define CLR(use, code) ((use) ? (code) : "")
+
 #define SETUP_TAP_TIMEOUT_MS 15000
 
 static void flush_stdin(void)
@@ -1306,13 +1316,17 @@ static void flush_stdin(void)
 static int prompt_yes_no(const char *question, int default_yes)
 {
     char line[64];
+    int use_color = stream_supports_color(stderr);
 
     flush_stdin();
 
     for (;;) {
         size_t len = 0;
 
-        fprintf(stderr, "%s [%s] ", question, default_yes ? "Y/n" : "y/N");
+        fprintf(stderr, "%s%s%s [%s%s%s] ",
+                CLR(use_color, ANSI_BOLD), question, CLR(use_color, ANSI_RESET),
+                CLR(use_color, ANSI_DIM), default_yes ? "Y/n" : "y/N",
+                CLR(use_color, ANSI_RESET));
         fflush(stderr);
 
         for (;;) {
@@ -1348,8 +1362,22 @@ static int prompt_yes_no(const char *question, int default_yes)
         if (*answer == 'n' || *answer == 'N')
             return 0;
 
-        fprintf(stderr, "Please answer y or n.\n");
+        fprintf(stderr, "%sPlease answer y or n.%s\n",
+                CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
     }
+}
+
+/*
+ * Report a detected lever the same way for both taps.
+ */
+static void print_detected_key(FILE *out, const input_device_t *device,
+                               const char *lever, int code, int use_color)
+{
+    fprintf(out, "\n  %s✓%s %s key %d on %s%s%s (%s)\n",
+            CLR(use_color, ANSI_GREEN), CLR(use_color, ANSI_RESET),
+            lever, code,
+            CLR(use_color, ANSI_BOLD), device->name, CLR(use_color, ANSI_RESET),
+            device->path);
 }
 
 /*
@@ -1366,14 +1394,19 @@ static int run_setup_wizard(char *device_path, size_t path_size)
     int dah = 0;
     int straight = 0;
     int result = -1;
+    int use_color = stream_supports_color(stderr);
 
     if (discover_input_devices(&devices, &count) < 0)
         return -1;
 
     if (count == 0) {
-        fprintf(stderr, "no /dev/input/event* devices found\n");
+        fprintf(stderr, "\n  %s⚠%s No /dev/input/event* devices found.\n",
+                CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
         goto out;
     }
+
+    fprintf(stderr, "\n  %s◆ CW keyer setup%s\n\n",
+            CLR(use_color, ANSI_TITLE), CLR(use_color, ANSI_RESET));
 
     for (;;) {
         size_t which = SIZE_MAX;
@@ -1382,20 +1415,21 @@ static int run_setup_wizard(char *device_path, size_t path_size)
         int rc;
 
         drain_device_events(devices, count);
-        fprintf(stderr,
-                "Tap the DOT (dit) paddle. Release it after the tap.\n"
-                "  (Ctrl+C cancels setup)\n");
+        fprintf(stderr, "  %s→%s Tap the DOT (dit) paddle, then release it.\n",
+                CLR(use_color, ANSI_CYAN), CLR(use_color, ANSI_RESET));
         rc = wait_for_paddle_press(devices, count, SIZE_MAX,
                                    SETUP_TAP_TIMEOUT_MS, &which, &code);
         if (rc < 0) {
             fprintf(stderr,
-                    "no readable input devices; check your udev rules "
-                    "(see the README)\n");
+                    "\n  %s⚠%s No readable input devices; check your udev "
+                    "rules (see the README).\n",
+                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
             goto out;
         }
         if (rc == 0) {
             fprintf(stderr,
-                    "no paddle press detected within %d seconds\n",
+                    "\n  %s⚠%s No paddle press detected within %d seconds.\n",
+                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
                     SETUP_TAP_TIMEOUT_MS / 1000);
             if (prompt_yes_no("Try again?", 1) != 1)
                 goto out;
@@ -1403,21 +1437,25 @@ static int run_setup_wizard(char *device_path, size_t path_size)
         }
 
         flush_stdin();
-        fprintf(stderr, "Detected %s (%s), key %d\n",
-                devices[which].name, devices[which].path, code);
+        print_detected_key(stderr, &devices[which], "DOT (dit)", code,
+                           use_color);
 
         drain_device_events(devices, count);
         fprintf(stderr,
-                "Now tap the DASH (dah) paddle on the same device.\n");
+                "\n  %s→%s Now tap the DASH (dah) paddle on the same device.\n",
+                CLR(use_color, ANSI_CYAN), CLR(use_color, ANSI_RESET));
         rc = wait_for_paddle_press(devices, count, which,
                                    SETUP_TAP_TIMEOUT_MS, &second, &dah);
         if (rc < 0) {
-            fprintf(stderr, "cannot poll the selected input device\n");
+            fprintf(stderr,
+                    "\n  %s⚠%s Cannot poll the selected input device.\n",
+                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
             goto out;
         }
         if (rc == 0) {
             fprintf(stderr,
-                    "no paddle press detected within %d seconds\n",
+                    "\n  %s⚠%s No paddle press detected within %d seconds.\n",
+                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
                     SETUP_TAP_TIMEOUT_MS / 1000);
             if (prompt_yes_no("Try again?", 1) != 1)
                 goto out;
@@ -1425,6 +1463,8 @@ static int run_setup_wizard(char *device_path, size_t path_size)
         }
 
         flush_stdin();
+        print_detected_key(stderr, &devices[second], "DASH (dah)", dah,
+                           use_color);
         selected = second;
         dit = code;
         straight = 0;
@@ -1433,7 +1473,9 @@ static int run_setup_wizard(char *device_path, size_t path_size)
             int straight_choice;
 
             fprintf(stderr,
-                    "Both taps used key %d; this looks like a straight key.\n",
+                    "\n  %s◆%s Both taps used key %d; that looks like a "
+                    "straight key.\n",
+                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
                     dit);
             straight_choice = prompt_yes_no("Use straight-key mode?", 1);
             if (straight_choice < 0)
@@ -1452,8 +1494,10 @@ static int run_setup_wizard(char *device_path, size_t path_size)
         break;
     }
 
-    fprintf(stderr, "Using %s (%s), detected as %s.\n",
-            devices[selected].name, devices[selected].path,
+    fprintf(stderr, "\n  %s●%s Using %s%s%s (%s), detected as %s\n",
+            CLR(use_color, ANSI_GREEN), CLR(use_color, ANSI_RESET),
+            CLR(use_color, ANSI_BOLD), devices[selected].name,
+            CLR(use_color, ANSI_RESET), devices[selected].path,
             device_kind_name(devices[selected].kind));
 
     int default_grab = devices[selected].kind == DEVICE_KIND_PADDLE;
@@ -1466,8 +1510,9 @@ static int run_setup_wizard(char *device_path, size_t path_size)
         int sure;
 
         fprintf(stderr,
-                "warning: grabbing a keyboard hides it from the desktop and "
-                "terminal; Ctrl+C may not reach cwkeyer.\n");
+                "\n  %s⚠%s Grabbing a keyboard hides it from the desktop and "
+                "terminal; Ctrl+C may not reach cwkeyer.\n",
+                CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
         sure = prompt_yes_no("Continue with exclusive grab?", 0);
         if (sure < 0)
             goto out;

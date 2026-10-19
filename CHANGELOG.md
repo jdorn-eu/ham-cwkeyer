@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cwkeyer` with no arguments on an interactive terminal now runs the same
   tap-to-select setup as `--setup`. Without a terminal it still prints the
   usage text, so scripts and CI are unaffected.
+- The `--setup` wizard reports both taps in the same format and uses spacing
+  and colors on a terminal; `NO_COLOR` disables the colors.
 - Limit user-selectable keying speed to 1–40 WPM, including runtime controls.
   At 40 WPM the full ±25 ms weighting range retains positive mark and space
   durations; higher speeds previously broke the promised element period.

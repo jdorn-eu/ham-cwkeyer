@@ -141,7 +141,7 @@ A pipe's final controls are read even if its writer has already closed. Speed, p
 - `CW_KEYER_WEIGHT_MS` Weighting, `-25`–`25` ms. Default: `0` (strict ITU timing). A constant time added to each mark and removed from the following space. The weighting can also be changed while running with `,` and `.`.
 - `CW_KEYER_DEBOUNCE_MS` Paddle RC filter time constant in milliseconds, `0`–`50`. Default: `10`; `0` disables the filter. The 8044's recommended 1 MΩ/0.01 µF network is about 10 ms. A press shorter than the filter's threshold time may not be recognized; lower the value for high-speed sending.
 - `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, it defaults to `cw_out`, the combined sink created by `cw-mic-mix.sh`. If you haven't run that script, set it explicitly to a real sink, e.g. `PULSE_SINK=$(pactl get-default-sink)`.
-- `NO_COLOR` If set, `--list-devices` does not color the category names.
+- `NO_COLOR` If set, `--list-devices` and the setup wizard do not use colors.
 
 ## Combine with mic input
 

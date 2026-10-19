@@ -1182,6 +1182,28 @@ static int run_prompt_tests(void)
     if (prompt_yes_no("test", 1) != -1)     /* EOF */
         failures++;
 
+    /* Both levers must be reported with the same layout. */
+    input_device_t dev;
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *out;
+
+    set_test_device(&dev, "/dev/input/event21", DEVICE_KIND_PADDLE);
+    snprintf(dev.name, sizeof(dev.name), "%s", "HRS VBand Keyer");
+    out = open_memstream(&buf, &len);
+    if (!out) {
+        failures++;
+    } else {
+        print_detected_key(out, &dev, "DOT (dit)", 29, 0);
+        print_detected_key(out, &dev, "DASH (dah)", 97, 1);
+        fclose(out);
+        if (!strstr(buf, "DOT (dit) key 29") ||
+            !strstr(buf, "DASH (dah) key 97") ||
+            strstr(buf, "\033[") == NULL)
+            failures++;
+        free(buf);
+    }
+
     dup2(saved_stdin, STDIN_FILENO);
     close(saved_stdin);
     unquiet_stderr(saved_err);
