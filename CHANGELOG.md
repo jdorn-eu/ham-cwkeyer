@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `--setup` now recognizes the HRS PaddleAdapter by name even though it
+  advertises a full keyboard keyset, so it is treated as a paddle and
+  defaults to exclusive grab.
+- `--setup` waits for the DOT lever to be released before accepting the DASH
+  tap, so a held lever or its repeat events cannot be mistaken for the
+  second lever.
 - `--setup` no longer reports the tap timeout immediately because another
   input device (for example a mouse) had a pending non-key event. The wait
   now keeps polling until the deadline or a real key press.

@@ -946,19 +946,21 @@ static device_kind_t classify_input_device(const char *name,
                       bit_is_set(KEY_SPACE, keys) &&
                       bit_is_set(KEY_ENTER, keys);
 
-    if (typing_keys)
-        return DEVICE_KIND_KEYBOARD;
+    /* The HRS PaddleAdapter advertises a full keyboard keyset, so a strong
+     * name hint must win over the capability check. */
+    if (name && (strcasestr(name, "keyer") || strcasestr(name, "paddle") ||
+                 strcasestr(name, "vband") || strcasestr(name, "morse")))
+        return DEVICE_KIND_PADDLE;
 
     if (name && (strcasestr(name, "keyboard") || strcasestr(name, "kbd")))
+        return DEVICE_KIND_KEYBOARD;
+
+    if (typing_keys)
         return DEVICE_KIND_KEYBOARD;
 
     /* Both default paddle keys at once is the strong, reliable signal. */
     if (bit_is_set(KEY_LEFTCTRL, keys) &&
         bit_is_set(KEY_RIGHTCTRL, keys))
-        return DEVICE_KIND_PADDLE;
-
-    if (name && (strcasestr(name, "keyer") || strcasestr(name, "paddle") ||
-                 strcasestr(name, "vband") || strcasestr(name, "morse")))
         return DEVICE_KIND_PADDLE;
 
     return DEVICE_KIND_UNKNOWN;
@@ -1290,6 +1292,66 @@ static int wait_for_paddle_press(const input_device_t *devices, size_t count,
     }
 }
 
+/*
+ * Wait for `code` to be released on `device`.  A paddle adapter may keep
+ * sending presses or autorepeat while a lever is held; the second tap must
+ * not start until the first lever is physically open.
+ */
+static int wait_for_key_release(const input_device_t *device, int code,
+                                int timeout_ms)
+{
+    int64_t deadline;
+    struct pollfd pfd;
+
+    if (device->fd < 0)
+        return -1;
+
+    deadline = mono_ns() + (int64_t)timeout_ms * 1000000LL;
+    pfd.fd = device->fd;
+    pfd.events = POLLIN;
+
+    for (;;) {
+        int64_t remaining_ns = deadline - mono_ns();
+        int wait_ms;
+        int rc;
+
+        if (remaining_ns <= 0)
+            return 0;
+
+        pfd.revents = 0;
+        wait_ms = (int)((remaining_ns + 999999LL) / 1000000LL);
+        rc = poll(&pfd, 1, wait_ms);
+        if (rc < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (rc == 0)
+            return 0;
+
+        for (;;) {
+            struct input_event ev;
+            ssize_t got = read(device->fd, &ev, sizeof(ev));
+
+            if (got == (ssize_t)sizeof(ev)) {
+                if (ev.type == EV_KEY && (int)ev.code == code &&
+                    ev.value == 0)
+                    return 1;
+                continue;
+            }
+            if (got < 0 && errno == EINTR)
+                continue;
+            if (got < 0 && errno == EAGAIN)
+                break;
+
+            return -1;
+        }
+
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+            return -1;
+    }
+}
+
 /* Setup output styling.  Colors are dropped when stderr is not a terminal. */
 #define ANSI_RESET  "\033[0m"
 #define ANSI_BOLD   "\033[1m"
@@ -1300,6 +1362,7 @@ static int wait_for_paddle_press(const input_device_t *devices, size_t count,
 #define ANSI_TITLE  "\033[1;36m"
 #define CLR(use, code) ((use) ? (code) : "")
 
+#define SETUP_RELEASE_TIMEOUT_MS 5000
 #define SETUP_TAP_TIMEOUT_MS 15000
 
 static void flush_stdin(void)
@@ -1440,10 +1503,27 @@ static int run_setup_wizard(char *device_path, size_t path_size)
         print_detected_key(stderr, &devices[which], "DOT (dit)", code,
                            use_color);
 
-        drain_device_events(devices, count);
         fprintf(stderr,
-                "\n  %s→%s Now tap the DASH (dah) paddle on the same device.\n",
+                "\n  %s→%s Release the DOT paddle, then tap the DASH (dah) "
+                "paddle on the same device.\n",
                 CLR(use_color, ANSI_CYAN), CLR(use_color, ANSI_RESET));
+        rc = wait_for_key_release(&devices[which], code,
+                                  SETUP_RELEASE_TIMEOUT_MS);
+        if (rc < 0) {
+            fprintf(stderr,
+                    "\n  %s⚠%s Cannot poll the selected input device.\n",
+                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+            goto out;
+        }
+        if (rc == 0) {
+            fprintf(stderr,
+                    "\n  %s⚠%s Did not see the DOT paddle release.\n",
+                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+            if (prompt_yes_no("Try again?", 1) != 1)
+                goto out;
+            continue;
+        }
+
         rc = wait_for_paddle_press(devices, count, which,
                                    SETUP_TAP_TIMEOUT_MS, &second, &dah);
         if (rc < 0) {

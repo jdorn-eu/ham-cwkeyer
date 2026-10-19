@@ -909,6 +909,12 @@ static int run_device_list_tests(void)
     if (!device_has_default_paddles(keys))
         failures++;
 
+    /* The HRS PaddleAdapter advertises a full keyboard keyset, so its
+     * name has to win over the capability check. */
+    if (classify_input_device("hamradio.solutions PaddleAdapter", keys) !=
+        DEVICE_KIND_PADDLE)
+        failures++;
+
     /* A dedicated adapter reports the paddle keys but not a typing set. */
     memset(keys, 0, sizeof(keys));
     set_test_key(keys, KEY_LEFTCTRL);
@@ -1122,12 +1128,38 @@ static int run_tap_tests(void)
         which != 99)
         failures++;
 
+    /* Release detection ignores presses, autorepeat, and other keys. */
+    drain_device_events(devices, 2);
+    e = make_event(EV_KEY, KEY_COMMA, 1);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    e = make_event(EV_KEY, KEY_COMMA, 2);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    e = make_event(EV_KEY, KEY_DOT, 0);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    if (wait_for_key_release(&devices[1], KEY_COMMA, 10) != 0)
+        failures++;
+
+    e = make_event(EV_KEY, KEY_COMMA, 0);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    if (wait_for_key_release(&devices[1], KEY_COMMA, 100) != 1)
+        failures++;
+
+    /* No release pending: timeout. */
+    if (wait_for_key_release(&devices[1], KEY_COMMA, 10) != 0)
+        failures++;
+
     /* Invalid filter index and no pollable devices are errors. */
     if (wait_for_paddle_press(devices, 2, 2, 10, &which, &code) != -1)
         failures++;
     devices[0].fd = -1;
     devices[1].fd = -1;
     if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != -1)
+        failures++;
+    if (wait_for_key_release(&devices[1], KEY_COMMA, 10) != -1)
         failures++;
 
     close(fds[0][0]);
