@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Consume pending runtime controls from a pipe before reacting to a
   simultaneous `POLLHUP` when its writer closes.
+- Route ordinary stop, suspend, and resume signals through a `sigwait()`
+  thread, synchronizing terminal and evdev grab operations with startup and
+  shutdown. Non-async-signal-safe terminal ioctls no longer run inside
+  handlers. Fatal crashes now use default signal disposition; restoring the
+  terminal after a crash cannot be guaranteed.
 
 ## [1.0.1] - 2026-10-18
 

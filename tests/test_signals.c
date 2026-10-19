@@ -26,8 +26,12 @@ int main(void)
         failures += fail("SIGPIPE terminated the process");
 
     /* A stop signal sets the flag and stops the loops. */
-    raise(SIGTERM);
-    if (!stop_requested)
+    kill(getpid(), SIGTERM);
+    for (int i = 0; i < 100 && keep_running(); i++) {
+        struct timespec tick = {0, 1000000};
+        nanosleep(&tick, NULL);
+    }
+    if (!ALOAD(stop_requested))
         failures += fail("SIGTERM did not set stop_requested");
     if (keep_running() != 0)
         failures += fail("SIGTERM did not stop keep_running()");
@@ -119,49 +123,83 @@ int main(void)
     close(sfd);
     close(mfd);
 
-    /*
-     * SIGTSTP must actually stop the process, and SIGCONT must resume it
-     * without treating the resume as a shutdown.
-     */
+    /* Exercise stop, resume and final shutdown against a real pty. */
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0)
+        return fail("second pty setup");
+    const char *name = ptsname(master);
+    if (!name)
+        return fail("second ptsname");
+    int slave = open(name, O_RDWR | O_NOCTTY);
+    int ready[2];
+    if (slave < 0 || pipe(ready) != 0)
+        return fail("second pty/pipe open");
+
     pid_t pid = fork();
     if (pid < 0)
         return fail("fork");
     if (pid == 0) {
-        stop_requested = 0;
+        close(ready[0]);
+        close(master);
+        if (dup2(slave, STDIN_FILENO) < 0)
+            _exit(2);
+        close(slave);
+        ASTORE(stop_requested, 0);
         ASTORE(running, 1);
         if (install_signal_handlers() != 0)
             _exit(2);
-
-        /*
-         * Detach from the controlling terminal before suspending: on resume
-         * the SIGCONT handler would re-disable echo on whatever stdin points
-         * at, and the child would otherwise leave the shared terminal broken.
-         */
-        int devnull = open("/dev/null", O_RDONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDIN_FILENO);
-            close(devnull);
+        disable_terminal_echo();
+        if (write(ready[1], "x", 1) != 1)
+            _exit(2);
+        close(ready[1]);
+        while (keep_running()) {
+            struct timespec tick = {0, 1000000};
+            nanosleep(&tick, NULL);
         }
-
-        raise(SIGTSTP);
-        restore_terminal();   /* belt and braces */
-        if (stop_requested)
-            _exit(3);
+        ASTORE(shutdown_wanted, 1);
+        stop_signal_thread();
+        restore_terminal();
         _exit(0);
     }
+    close(ready[1]);
+    char ready_byte;
+    if (read(ready[0], &ready_byte, 1) != 1)
+        return fail("child startup");
+    close(ready[0]);
+    if (tcgetattr(slave, &after) != 0 || (after.c_lflag & ECHO))
+        failures += fail("child did not disable echo");
 
+    if (kill(pid, SIGTSTP) != 0)
+        return fail("kill SIGTSTP");
     int status;
     if (waitpid(pid, &status, WUNTRACED) != pid)
         return fail("waitpid stop");
     if (!WIFSTOPPED(status))
         failures += fail("child did not stop on SIGTSTP");
+    if (tcgetattr(slave, &after) != 0 || !(after.c_lflag & ECHO))
+        failures += fail("echo not restored while stopped");
     if (kill(pid, SIGCONT) != 0)
         return fail("kill SIGCONT");
+    for (int i = 0; i < 100; i++) {
+        struct timespec tick = {0, 1000000};
+        if (tcgetattr(slave, &after) == 0 && !(after.c_lflag & ECHO))
+            break;
+        nanosleep(&tick, NULL);
+    }
+    if (after.c_lflag & ECHO)
+        failures += fail("echo not disabled on resume");
+    if (kill(pid, SIGTERM) != 0)
+        return fail("kill SIGTERM");
     if (waitpid(pid, &status, 0) != pid)
-        return fail("waitpid resume");
+        return fail("waitpid shutdown");
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
         failures += fail("child failed after resume");
+    if (tcgetattr(slave, &after) != 0 || !(after.c_lflag & ECHO))
+        failures += fail("echo not restored at exit");
+    close(slave);
+    close(master);
 
+    stop_signal_thread();
     if (failures == 0) {
         printf("signal/terminal tests passed\n");
     } else {

@@ -166,30 +166,31 @@ static atomic_uint mark_read = 0;
 static atomic_int running = 1;
 static atomic_int fatal_error = 0;
 
-static volatile sig_atomic_t stop_requested = 0;
+static atomic_int stop_requested = 0;
 
-/*
- * The evdev thread owns this descriptor, but the SIGTSTP/SIGCONT handlers must
- * be able to drop and restore an exclusive EVIOCGRAB around a stop. -1 means
- * no device is currently open.
- */
-static volatile sig_atomic_t evdev_fd = -1;
-static volatile sig_atomic_t evdev_grabbed = 0;
+/* The signal thread and evdev thread serialize grab and descriptor changes. */
+static pthread_mutex_t evdev_lock = PTHREAD_MUTEX_INITIALIZER;
+static int evdev_fd = -1;
+static int evdev_grabbed = 0;
+static int grab_suspended = 0;
 
-/* Set by the SIGTSTP handler; SIGCONT only restores our state after that. */
-static volatile sig_atomic_t suspended = 0;
+/* A signal-waiting thread handles normal stop/continue signals outside a
+ * signal handler. shutdown_wanted is set before joining it. */
+static atomic_int shutdown_wanted = 0;
+static pthread_t signal_tid;
+static sigset_t signal_set;
+static sigset_t old_signal_mask;
+static pthread_mutex_t terminal_lock = PTHREAD_MUTEX_INITIALIZER;
+static int terminal_suspended = 0;
+static int signal_started = 0;
 
-/* Set before the final terminal restore so a late SIGCONT cannot re-disable
- * echo while the program is shutting down. */
-static volatile sig_atomic_t shutting_down = 0;
-
-/* Defined with the terminal code below; the signal handlers call them. */
+/* Defined with the terminal code below; the signal thread calls them. */
 static void disable_terminal_echo(void);
 static void restore_terminal(void);
 
 static int keep_running(void)
 {
-    if (stop_requested)
+    if (ALOAD(stop_requested))
         ASTORE(running, 0);
 
     return ALOAD(running);
@@ -203,157 +204,143 @@ static void request_stop(int fatal)
     ASTORE(running, 0);
 }
 
-/*
- * The signal handlers below do the minimum work that cannot be deferred:
- * kill(), tcsetattr(), tcflush(), and ioctl() are single syscalls.
- * They deliberately avoid stdio, malloc, and anything that can take a lock.
- */
 static void release_evdev_grab(void)
 {
-    int fd = (int)evdev_fd;
-
-    if (fd >= 0 && evdev_grabbed) {
-        ioctl(fd, EVIOCGRAB, 0);
+    pthread_mutex_lock(&evdev_lock);
+    if (evdev_fd >= 0 && evdev_grabbed) {
+        (void)ioctl(evdev_fd, EVIOCGRAB, 0);
         evdev_grabbed = 0;
     }
+    pthread_mutex_unlock(&evdev_lock);
 }
 
 static void acquire_evdev_grab(void)
 {
-    int fd = (int)evdev_fd;
-
-    if (do_grab && fd >= 0 && !evdev_grabbed) {
-        if (ioctl(fd, EVIOCGRAB, 1) == 0)
+    pthread_mutex_lock(&evdev_lock);
+    if (do_grab && !grab_suspended && evdev_fd >= 0 && !evdev_grabbed) {
+        if (ioctl(evdev_fd, EVIOCGRAB, 1) == 0)
             evdev_grabbed = 1;
+        else
+            fprintf(stderr, "warning: EVIOCGRAB failed: %s; events may leak to desktop\n",
+                    strerror(errno));
     }
+    pthread_mutex_unlock(&evdev_lock);
 }
 
-/* SIGINT, SIGTERM, SIGHUP, SIGQUIT: ask the loops to wind down. */
-static void handle_stop_signal(int sig)
+static void *signal_thread(void *arg)
 {
-    (void)sig;
-    stop_requested = 1;
-}
+    int suspended = 0;
+    (void)arg;
 
-/*
- * Ctrl+Z. Put the terminal and the input device back how the rest of the
- * session expects them, then really stop. SIGSTOP is used rather than
- * re-raising SIGTSTP because the latter is blocked while its own handler
- * runs; SIGSTOP is uncatchable and unblockable, so it takes effect at once.
- * On resume the kernel delivers SIGCONT, whose handler re-establishes our
- * terminal mode and grab (see handle_cont).
- */
-static void handle_tstp(int sig)
-{
-    (void)sig;
+    for (;;) {
+        int sig;
+        int rc = sigwait(&signal_set, &sig);
+        if (rc != 0) {
+            fprintf(stderr, "sigwait: %s\n", strerror(rc));
+            request_stop(1);
+            break;
+        }
+        if (ALOAD(shutdown_wanted))
+            break;
 
-    suspended = 1;
-    release_evdev_grab();
-    restore_terminal();
-
-    kill(getpid(), SIGSTOP);
-}
-
-/*
- * Only re-establish the terminal and grab if we released them in our own
- * SIGTSTP handler.  A SIGSTOP sent directly by another process leaves both in
- * place, so its SIGCONT must not disable echo again (that would also break a
- * concurrent shutdown).
- */
-static void handle_cont(int sig)
-{
-    (void)sig;
-
-    if (!suspended)
-        return;
-
-    suspended = 0;
-
-    if (shutting_down)
-        return;
-
-    disable_terminal_echo();
-    acquire_evdev_grab();
-}
-
-/*
- * Last-resort cleanup for fatal signals: leave the terminal usable, then die
- * from the original signal so the exit status and any core dump are preserved.
- */
-static void handle_fatal(int sig)
-{
-    struct sigaction dfl;
-    sigset_t mask;
-
-    release_evdev_grab();
-    restore_terminal();
-
-    memset(&dfl, 0, sizeof(dfl));
-    dfl.sa_handler = SIG_DFL;
-    sigemptyset(&dfl.sa_mask);
-    sigaction(sig, &dfl, NULL);
-
-    /* The signal was blocked while this handler ran; unblock it so the
-     * re-raise below actually terminates the process. */
-    sigemptyset(&mask);
-    sigaddset(&mask, sig);
-    pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
-
-    raise(sig);
-    _exit(128 + sig);
-}
-
-static int set_signal_handler(int sig, void (*handler)(int))
-{
-    struct sigaction sa;
-
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = handler;
-    sigemptyset(&sa.sa_mask);
-
-    /* A stop/continue pair must not interrupt another handler halfway through
-     * releasing or restoring the terminal and grab.  Blocking them in every
-     * handler keeps the state transitions atomic with respect to Ctrl+Z. */
-    (void)sigaddset(&sa.sa_mask, SIGTSTP);
-    (void)sigaddset(&sa.sa_mask, SIGCONT);
-
-    /*
-     * Deliberately no SA_RESTART: blocking poll()/ALSA/nanosleep calls should
-     * return EINTR so shutdown and suspend are immediate.
-     */
-    sa.sa_flags = 0;
-
-    if (sigaction(sig, &sa, NULL) < 0) {
-        fprintf(stderr, "sigaction(%d): %s\n", sig, strerror(errno));
-        return -1;
+        switch (sig) {
+        case SIGINT:
+        case SIGTERM:
+        case SIGHUP:
+        case SIGQUIT:
+            ASTORE(stop_requested, 1);
+            request_stop(0);
+            break;
+        case SIGTSTP:
+            if (!suspended && keep_running()) {
+                suspended = 1;
+                pthread_mutex_lock(&terminal_lock);
+                terminal_suspended = 1;
+                pthread_mutex_unlock(&terminal_lock);
+                pthread_mutex_lock(&evdev_lock);
+                grab_suspended = 1;
+                pthread_mutex_unlock(&evdev_lock);
+                release_evdev_grab();
+                restore_terminal();
+                /* SIGSTOP suspends all threads; SIGCONT will be consumed here
+                 * after the process resumes. Do not suspend if shutdown won
+                 * the race while we were restoring the terminal. */
+                if (!ALOAD(shutdown_wanted) && keep_running())
+                    (void)kill(getpid(), SIGSTOP);
+            }
+            break;
+        case SIGCONT:
+            if (suspended) {
+                suspended = 0;
+                if (!ALOAD(shutdown_wanted)) {
+                    pthread_mutex_lock(&terminal_lock);
+                    terminal_suspended = 0;
+                    pthread_mutex_unlock(&terminal_lock);
+                    disable_terminal_echo();
+                    pthread_mutex_lock(&evdev_lock);
+                    grab_suspended = 0;
+                    pthread_mutex_unlock(&evdev_lock);
+                    acquire_evdev_grab();
+                }
+            }
+            break;
+        default:
+            break;
+        }
     }
+    return NULL;
+}
 
-    return 0;
+static void stop_signal_thread(void)
+{
+    if (!signal_started)
+        return;
+    ASTORE(shutdown_wanted, 1);
+    /* Wake sigwait even if no external signal arrived. */
+    (void)pthread_kill(signal_tid, SIGCONT);
+    pthread_join(signal_tid, NULL);
+    signal_started = 0;
+    /* Leave the mask in place until process exit: a late stop/continue must
+     * not get its default action between joining and terminal restoration. */
 }
 
 static int install_signal_handlers(void)
 {
-    if (set_signal_handler(SIGINT, handle_stop_signal) < 0 ||
-        set_signal_handler(SIGTERM, handle_stop_signal) < 0 ||
-        set_signal_handler(SIGHUP, handle_stop_signal) < 0 ||
-        set_signal_handler(SIGQUIT, handle_stop_signal) < 0 ||
-        set_signal_handler(SIGTSTP, handle_tstp) < 0 ||
-        set_signal_handler(SIGCONT, handle_cont) < 0 ||
-        set_signal_handler(SIGSEGV, handle_fatal) < 0 ||
-        set_signal_handler(SIGBUS, handle_fatal) < 0 ||
-        set_signal_handler(SIGFPE, handle_fatal) < 0 ||
-        set_signal_handler(SIGILL, handle_fatal) < 0 ||
-        set_signal_handler(SIGABRT, handle_fatal) < 0)
-        return -1;
+    struct sigaction sa = {0};
+    int rc;
 
-    /*
-     * The decoder writes to stdout. If its consumer goes away, writes should
-     * fail with EPIPE rather than kill the whole keyer and skip the clean
-     * shutdown path. Ignore SIGPIPE and let write errors surface instead.
-     */
-    if (set_signal_handler(SIGPIPE, SIG_IGN) < 0)
-        return -1;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGINT);
+    sigaddset(&signal_set, SIGTERM);
+    sigaddset(&signal_set, SIGHUP);
+    sigaddset(&signal_set, SIGQUIT);
+    sigaddset(&signal_set, SIGTSTP);
+    sigaddset(&signal_set, SIGCONT);
 
+    /* Block before creating any other threads; children inherit the mask. */
+    rc = pthread_sigmask(SIG_BLOCK, &signal_set, &old_signal_mask);
+    if (rc != 0) {
+        fprintf(stderr, "pthread_sigmask: %s\n", strerror(rc));
+        return -1;
+    }
+
+    /* Broken decode output must fail with EPIPE, not terminate the keyer. */
+    sa.sa_handler = SIG_IGN;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGPIPE, &sa, NULL) < 0) {
+        fprintf(stderr, "sigaction(SIGPIPE): %s\n", strerror(errno));
+        (void)pthread_sigmask(SIG_SETMASK, &old_signal_mask, NULL);
+        return -1;
+    }
+
+    ASTORE(shutdown_wanted, 0);
+    rc = pthread_create(&signal_tid, NULL, signal_thread, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "pthread_create(signal): %s\n", strerror(rc));
+        (void)pthread_sigmask(SIG_SETMASK, &old_signal_mask, NULL);
+        return -1;
+    }
+    signal_started = 1;
     return 0;
 }
 
@@ -1027,21 +1014,15 @@ static void *evdev_thread(void *arg)
         return NULL;
     }
 
+    pthread_mutex_lock(&evdev_lock);
     evdev_fd = fd;
+    pthread_mutex_unlock(&evdev_lock);
 
     warn_if_key_not_supported(fd, dit_code, "dit");
     warn_if_key_not_supported(fd, dah_code, "dah");
     initialize_paddle_state_from_device(fd);
 
-    if (do_grab) {
-        if (ioctl(fd, EVIOCGRAB, 1) == 0) {
-            evdev_grabbed = 1;
-        } else {
-            fprintf(stderr,
-                    "warning: EVIOCGRAB failed: %s; events may leak to desktop\n",
-                    strerror(errno));
-        }
-    }
+    acquire_evdev_grab();
 
     while (keep_running()) {
         struct pollfd pfd;
@@ -1116,10 +1097,13 @@ static void *evdev_thread(void *arg)
 out:
     clear_input_state();
 
-    release_evdev_grab();
+    pthread_mutex_lock(&evdev_lock);
+    if (evdev_grabbed)
+        (void)ioctl(fd, EVIOCGRAB, 0);
+    evdev_grabbed = 0;
     evdev_fd = -1;
-
     close(fd);
+    pthread_mutex_unlock(&evdev_lock);
 
     if (fatal)
         request_stop(1);
@@ -1134,50 +1118,37 @@ out:
  * Ctrl+C still works.
  */
 static struct termios saved_termios;
-static volatile sig_atomic_t termios_modified = 0;
+static int termios_modified = 0; /* protected by terminal_lock */
 
 static void disable_terminal_echo(void)
 {
     struct termios t;
 
-    /* Already disabled; re-saving here would store the disabled state. */
-    if (termios_modified || !isatty(STDIN_FILENO))
-        return;
-
+    pthread_mutex_lock(&terminal_lock);
+    if (terminal_suspended || termios_modified || !isatty(STDIN_FILENO))
+        goto out;
     if (tcgetattr(STDIN_FILENO, &t) < 0)
-        return;
+        goto out;
 
     saved_termios = t;
     t.c_lflag &= ~(tcflag_t)(ECHO | ICANON);
-
-    /* Mark the state before applying it.  If SIGTSTP/SIGCONT arrives in the
-     * middle of this sequence, the handler must know that saved_termios is
-     * the original state, not the already-disabled one. */
+    /* Keep the original state available even if tcsetattr partly fails. */
     termios_modified = 1;
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &t) < 0) {
-        /* Keep the flag set: saved_termios is what must be restored, and a
-         * partial or interrupted change still needs undoing. */
-        return;
-    }
-    /* Re-assert the state in case a handler restored it while tcsetattr()
-     * was in progress. */
-    termios_modified = 1;
-
-    /* The keyer never reads stdin, so anything typed while echo/canonical
-     * were off must not be replayed to the shell after we exit. */
-    (void)tcflush(STDIN_FILENO, TCIFLUSH);
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &t) == 0)
+        (void)tcflush(STDIN_FILENO, TCIFLUSH);
+out:
+    pthread_mutex_unlock(&terminal_lock);
 }
 
 static void restore_terminal(void)
 {
-    if (!termios_modified)
-        return;
-
-    /* Drop keystrokes that reached the tty while the keyer was running. */
-    (void)tcflush(STDIN_FILENO, TCIFLUSH);
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios) < 0)
-        return; /* keep termios_modified so a later call can retry */
-    termios_modified = 0;
+    pthread_mutex_lock(&terminal_lock);
+    if (termios_modified) {
+        (void)tcflush(STDIN_FILENO, TCIFLUSH);
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios) == 0)
+            termios_modified = 0;
+    }
+    pthread_mutex_unlock(&terminal_lock);
 }
 
 /*
@@ -2042,7 +2013,7 @@ int main(int argc, char **argv)
 
     pcm = open_audio(&actual_rate);
     if (!pcm) {
-        shutting_down = 1;
+        stop_signal_thread();
         restore_terminal();
         return 1;
     }
@@ -2051,7 +2022,7 @@ int main(int argc, char **argv)
     err = pthread_create(&evdev_tid, NULL, evdev_thread, argv[1]);
     if (err != 0) {
         fprintf(stderr, "pthread_create(evdev): %s\n", strerror(err));
-        shutting_down = 1;
+        stop_signal_thread();
         restore_terminal();
         snd_pcm_close(pcm);
         return 1;
@@ -2061,9 +2032,10 @@ int main(int argc, char **argv)
     if (err != 0) {
         fprintf(stderr, "pthread_create(keyer): %s\n", strerror(err));
         request_stop(1);
-        shutting_down = 1;
-        restore_terminal();
+        ASTORE(shutdown_wanted, 1);
         pthread_join(evdev_tid, NULL);
+        stop_signal_thread();
+        restore_terminal();
         snd_pcm_close(pcm);
         return 1;
     }
@@ -2083,13 +2055,14 @@ int main(int argc, char **argv)
         request_stop(1);
 
     request_stop(0);
+    ASTORE(shutdown_wanted, 1);
     pthread_join(keyer_tid, NULL);
     if (control_started)
         pthread_join(control_tid, NULL);
     pthread_join(evdev_tid, NULL);
+    stop_signal_thread();
 
     snd_pcm_close(pcm);
-    shutting_down = 1;
     restore_terminal();
 
     /* Only mention the audio health if something actually went wrong. */
