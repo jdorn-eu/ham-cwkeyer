@@ -109,14 +109,17 @@ report the default LEFTCTRL/RIGHTCTRL paddle keys are marked. The category
 names are colored when stdout is a terminal; set `NO_COLOR` to turn that
 off. Known adapters, currently the HRS PaddleAdapter, are also recognized by
 USB vendor/product ID and marked in the listing; the table in `cwkeyer.c`
-is a one-line addition per device.
+stores their default keys and is a one-line addition per device. A single
+known adapter skips the setup tap test.
 `./cwkeyer --setup` is the guided version: it asks you to tap the dot lever
 and then the dash lever, learns the device and both key codes, and starts
-with the defaults. It does not need the `/dev/input/eventX` name. A device
-that looks like a normal keyboard defaults to `nograb`; a dedicated paddle
-defaults to exclusive grab. If both taps use the same key, it offers
-straight-key mode. Speed, pitch, level, and weighting stay at their defaults
-and remain adjustable while running.
+with the defaults. It does not need the `/dev/input/eventX` name. If exactly
+one known paddle adapter is present, the tap test is skipped and the
+adapter's known default keys are used. Otherwise, a device that looks like a
+normal keyboard defaults to `nograb`; a dedicated paddle defaults to
+exclusive grab. If both taps use the same key, it offers straight-key mode.
+Speed, pitch, level, and weighting stay at their defaults and remain
+adjustable while running.
 With no arguments on an interactive terminal, `./cwkeyer` runs the same
 setup; without a terminal it prints the usage text.
 The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). `./cwkeyer --help` lists the known key names; raw evdev key codes work too.

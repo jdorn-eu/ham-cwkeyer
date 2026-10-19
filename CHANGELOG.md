@@ -10,8 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Known paddle adapters are recognized by USB vendor/product ID, starting
-  with the HRS PaddleAdapter. The table in `cwkeyer.c` is a one-line
-  addition per device, and `--list-devices` shows the known label.
+  with the HRS PaddleAdapter. The table in `cwkeyer.c` stores the default
+  dot/dash key codes and is a one-line addition per device. A single known
+  adapter skips the tap test and uses those codes; `--list-devices` shows
+  the known label.
 - `--setup`: interactively choose the paddle device by tapping the dot and
   dash levers, which also learns both key codes. Starts with the default
   speed, pitch, level, and weighting. A keyboard-like device defaults to

@@ -388,8 +388,8 @@ static void usage(const char *prog)
         "            used only on a terminal; set NO_COLOR to disable them.\n"
         "  --setup   Choose the paddle device by tapping the levers, then\n"
         "            start with the default speed, pitch, level, and\n"
-        "            weighting. A device that looks like a keyboard\n"
-        "            defaults to nograb.\n"
+        "            weighting. Known paddle adapters skip the tap test. A\n"
+        "            device that looks like a keyboard defaults to nograb.\n"
         "\n"
         "With no arguments on an interactive terminal, cwkeyer runs the\n"
         "same tap-to-select setup and then starts with the defaults.\n"
@@ -942,25 +942,35 @@ static const char *device_kind_name(device_kind_t kind)
 typedef struct {
     unsigned short vendor;
     unsigned short product;
+    int dit_code;
+    int dah_code;
     const char *label;
 } known_paddle_t;
 
 static const known_paddle_t known_paddles[] = {
     /* hamradio.solutions / HRS PaddleAdapter (VBand). */
-    {0x04d8, 0x01a6, "HRS PaddleAdapter"},
+    {0x04d8, 0x01a6, KEY_LEFTCTRL, KEY_RIGHTCTRL, "HRS PaddleAdapter"},
 };
 
-static const char *known_paddle_label(unsigned short vendor,
-                                      unsigned short product)
+static const known_paddle_t *known_paddle_by_id(unsigned short vendor,
+                                                unsigned short product)
 {
     for (size_t i = 0; i < sizeof(known_paddles) / sizeof(known_paddles[0]);
          i++) {
         if (known_paddles[i].vendor == vendor &&
             known_paddles[i].product == product)
-            return known_paddles[i].label;
+            return &known_paddles[i];
     }
 
     return NULL;
+}
+
+static const char *known_paddle_label(unsigned short vendor,
+                                      unsigned short product)
+{
+    const known_paddle_t *known = known_paddle_by_id(vendor, product);
+
+    return known ? known->label : NULL;
 }
 
 /*
@@ -1190,6 +1200,27 @@ static void close_input_devices(input_device_t *devices, size_t count)
     }
 
     free(devices);
+}
+
+/*
+ * Find the single known paddle adapter in the discovered list.  More than
+ * one known adapter is ambiguous, so the caller falls back to tapping.
+ */
+static size_t find_known_paddle(const input_device_t *devices, size_t count)
+{
+    size_t found = SIZE_MAX;
+
+    for (size_t i = 0; i < count; i++) {
+        if (devices[i].fd < 0)
+            continue;
+        if (known_paddle_by_id(devices[i].vendor, devices[i].product) == NULL)
+            continue;
+        if (found != SIZE_MAX)
+            return SIZE_MAX;
+        found = i;
+    }
+
+    return found;
 }
 
 /*
@@ -1517,107 +1548,132 @@ static int run_setup_wizard(char *device_path, size_t path_size)
     fprintf(stderr, "\n  %s◆ CW keyer setup%s\n\n",
             CLR(use_color, ANSI_TITLE), CLR(use_color, ANSI_RESET));
 
-    for (;;) {
-        size_t which = SIZE_MAX;
-        size_t second = SIZE_MAX;
-        int code = 0;
-        int rc;
+    size_t known_index = find_known_paddle(devices, count);
 
-        drain_device_events(devices, count);
-        fprintf(stderr, "  %s→%s Tap the DOT (dit) paddle, then release it.\n",
-                CLR(use_color, ANSI_CYAN), CLR(use_color, ANSI_RESET));
-        rc = wait_for_paddle_press(devices, count, SIZE_MAX,
-                                   SETUP_TAP_TIMEOUT_MS, &which, &code);
-        if (rc < 0) {
-            fprintf(stderr,
-                    "\n  %s⚠%s No readable input devices; check your udev "
-                    "rules (see the README).\n",
-                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+    if (known_index != SIZE_MAX) {
+        const known_paddle_t *adapter =
+            known_paddle_by_id(devices[known_index].vendor,
+                               devices[known_index].product);
+
+        if (!adapter)
             goto out;
-        }
-        if (rc == 0) {
-            fprintf(stderr,
-                    "\n  %s⚠%s No paddle press detected within %d seconds.\n",
-                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
-                    SETUP_TAP_TIMEOUT_MS / 1000);
-            if (prompt_yes_no("Try again?", 1) != 1)
-                goto out;
-            continue;
-        }
 
-        flush_stdin();
-        print_detected_key(stderr, &devices[which], "DOT (dit)", code,
-                           use_color);
+        selected = known_index;
+        dit = adapter->dit_code;
+        dah = adapter->dah_code;
+        straight = dit == dah;
 
         fprintf(stderr,
-                "\n  %s→%s Release the DOT paddle, then tap the DASH (dah) "
-                "paddle on the same device.\n",
-                CLR(use_color, ANSI_CYAN), CLR(use_color, ANSI_RESET));
-        rc = wait_for_key_release(&devices[which], code,
-                                  SETUP_RELEASE_TIMEOUT_MS);
-        if (rc < 0) {
-            fprintf(stderr,
-                    "\n  %s⚠%s Cannot poll the selected input device.\n",
-                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
-            goto out;
-        }
-        if (rc == 0) {
-            fprintf(stderr,
-                    "\n  %s⚠%s Did not see the DOT paddle release.\n",
-                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
-            if (prompt_yes_no("Try again?", 1) != 1)
+                "  %s✓%s Known paddle adapter: %s%s%s (%s)\n"
+                "    Using its default dot/dash keys (%d/%d); no tap test "
+                "needed.\n",
+                CLR(use_color, ANSI_GREEN), CLR(use_color, ANSI_RESET),
+                CLR(use_color, ANSI_BOLD), devices[known_index].name,
+                CLR(use_color, ANSI_RESET), devices[known_index].path,
+                dit, dah);
+    } else {
+        for (;;) {
+            size_t which = SIZE_MAX;
+            size_t second = SIZE_MAX;
+            int code = 0;
+            int rc;
+
+            drain_device_events(devices, count);
+            fprintf(stderr, "  %s→%s Tap the DOT (dit) paddle, then release it.\n",
+                    CLR(use_color, ANSI_CYAN), CLR(use_color, ANSI_RESET));
+            rc = wait_for_paddle_press(devices, count, SIZE_MAX,
+                                       SETUP_TAP_TIMEOUT_MS, &which, &code);
+            if (rc < 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s No readable input devices; check your udev "
+                        "rules (see the README).\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
                 goto out;
-            continue;
-        }
-
-        rc = wait_for_paddle_press(devices, count, which,
-                                   SETUP_TAP_TIMEOUT_MS, &second, &dah);
-        if (rc < 0) {
-            fprintf(stderr,
-                    "\n  %s⚠%s Cannot poll the selected input device.\n",
-                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
-            goto out;
-        }
-        if (rc == 0) {
-            fprintf(stderr,
-                    "\n  %s⚠%s No paddle press detected within %d seconds.\n",
-                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
-                    SETUP_TAP_TIMEOUT_MS / 1000);
-            if (prompt_yes_no("Try again?", 1) != 1)
-                goto out;
-            continue;
-        }
-
-        flush_stdin();
-        print_detected_key(stderr, &devices[second], "DASH (dah)", dah,
-                           use_color);
-        selected = second;
-        dit = code;
-        straight = 0;
-
-        if (dit == dah) {
-            int straight_choice;
-
-            fprintf(stderr,
-                    "\n  %s◆%s Both taps used key %d; that looks like a "
-                    "straight key.\n",
-                    CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
-                    dit);
-            straight_choice = prompt_yes_no("Use straight-key mode?", 1);
-            if (straight_choice < 0)
-                goto out;
-            if (!straight_choice)
+            }
+            if (rc == 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s No paddle press detected within %d seconds.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
+                        SETUP_TAP_TIMEOUT_MS / 1000);
+                if (prompt_yes_no("Try again?", 1) != 1)
+                    goto out;
                 continue;
-            straight = 1;
-            dah = dit;
-        }
+            }
 
-        int use_it = prompt_yes_no("Use this device?", 1);
-        if (use_it < 0)
-            goto out;
-        if (!use_it)
-            continue;
-        break;
+            flush_stdin();
+            print_detected_key(stderr, &devices[which], "DOT (dit)", code,
+                               use_color);
+
+            fprintf(stderr,
+                    "\n  %s→%s Release the DOT paddle, then tap the DASH (dah) "
+                    "paddle on the same device.\n",
+                    CLR(use_color, ANSI_CYAN), CLR(use_color, ANSI_RESET));
+            rc = wait_for_key_release(&devices[which], code,
+                                      SETUP_RELEASE_TIMEOUT_MS);
+            if (rc < 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s Cannot poll the selected input device.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+                goto out;
+            }
+            if (rc == 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s Did not see the DOT paddle release.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+                if (prompt_yes_no("Try again?", 1) != 1)
+                    goto out;
+                continue;
+            }
+
+            rc = wait_for_paddle_press(devices, count, which,
+                                       SETUP_TAP_TIMEOUT_MS, &second, &dah);
+            if (rc < 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s Cannot poll the selected input device.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+                goto out;
+            }
+            if (rc == 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s No paddle press detected within %d seconds.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
+                        SETUP_TAP_TIMEOUT_MS / 1000);
+                if (prompt_yes_no("Try again?", 1) != 1)
+                    goto out;
+                continue;
+            }
+
+            flush_stdin();
+            print_detected_key(stderr, &devices[second], "DASH (dah)", dah,
+                               use_color);
+            selected = second;
+            dit = code;
+            straight = 0;
+
+            if (dit == dah) {
+                int straight_choice;
+
+                fprintf(stderr,
+                        "\n  %s◆%s Both taps used key %d; that looks like a "
+                        "straight key.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
+                        dit);
+                straight_choice = prompt_yes_no("Use straight-key mode?", 1);
+                if (straight_choice < 0)
+                    goto out;
+                if (!straight_choice)
+                    continue;
+                straight = 1;
+                dah = dit;
+            }
+
+            int use_it = prompt_yes_no("Use this device?", 1);
+            if (use_it < 0)
+                goto out;
+            if (!use_it)
+                continue;
+            break;
+        }
     }
 
     const char *known = known_paddle_label(devices[selected].vendor,

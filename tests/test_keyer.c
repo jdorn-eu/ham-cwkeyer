@@ -923,6 +923,31 @@ static int run_device_list_tests(void)
         known_paddle_label(0, 0) != NULL)
         failures++;
 
+    const known_paddle_t *kp = known_paddle_by_id(0x04d8, 0x01a6);
+    if (!kp || kp->dit_code != KEY_LEFTCTRL ||
+        kp->dah_code != KEY_RIGHTCTRL)
+        failures++;
+
+    /* Exactly one readable known adapter is auto-selected; zero or two
+     * are ambiguous. */
+    input_device_t list[2];
+    memset(list, 0, sizeof(list));
+    list[0].fd = 0;
+    list[1].fd = 0;
+    list[1].vendor = 0x04d8;
+    list[1].product = 0x01a6;
+    if (find_known_paddle(list, 2) != 1)
+        failures++;
+    list[0].vendor = 0x04d8;
+    list[0].product = 0x01a6;
+    if (find_known_paddle(list, 2) != SIZE_MAX)
+        failures++;
+    list[0].vendor = 0;
+    list[0].product = 0;
+    list[1].fd = -1;
+    if (find_known_paddle(list, 2) != SIZE_MAX)
+        failures++;
+
     /* A dedicated adapter reports the paddle keys but not a typing set. */
     memset(keys, 0, sizeof(keys));
     set_test_key(keys, KEY_LEFTCTRL);

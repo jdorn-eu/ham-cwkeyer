@@ -125,7 +125,9 @@ the dash lever. This is also what a bare
 invocation does on an interactive terminal. The device and both key codes
 are learned from the taps, so the
 .I /dev/input/eventX
-name is not needed. Starts with the default speed, pitch, level, and
+name is not needed. If exactly one known paddle adapter is present, the tap
+test is skipped and the adapter's table default keys are used instead.
+Starts with the default speed, pitch, level, and
 weighting, all of which remain adjustable at runtime. A device that looks
 like a normal keyboard defaults to
 .B nograb
