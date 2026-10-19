@@ -1137,6 +1137,122 @@ static void close_input_devices(input_device_t *devices, size_t count)
 }
 
 /*
+ * Discard events already queued on the discovered devices, so a key pressed
+ * before the prompt cannot select a device.  The setup wizard (next step)
+ * is the only caller; the attribute keeps this intermediate build clean.
+ */
+static void __attribute__((unused))
+drain_device_events(const input_device_t *devices, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (devices[i].fd < 0)
+            continue;
+
+        for (;;) {
+            struct input_event ev;
+            ssize_t got = read(devices[i].fd, &ev, sizeof(ev));
+
+            if (got == (ssize_t)sizeof(ev))
+                continue;
+            if (got < 0 && errno == EINTR)
+                continue;
+            break;
+        }
+    }
+}
+
+/*
+ * Wait for the next key press on the discovered devices. `only` is a device
+ * index for the second (dah) tap, or SIZE_MAX to watch every device.
+ * Autorepeat and key releases are ignored. Returns 1 on a press, 0 on
+ * timeout, and -1 when there is nothing to poll or poll() fails.  The setup
+ * wizard (next step) is the only caller; the attribute keeps this
+ * intermediate build clean.
+ */
+static int __attribute__((unused))
+wait_for_paddle_press(const input_device_t *devices, size_t count,
+                                 size_t only, int timeout_ms,
+                                 size_t *which, int *code)
+{
+    struct pollfd *pfds;
+    size_t *indices;
+    size_t nfds = 0;
+    int rc;
+
+    if (only != SIZE_MAX && only >= count)
+        return -1;
+
+    for (size_t i = 0; i < count; i++) {
+        if (devices[i].fd >= 0 && (only == SIZE_MAX || i == only))
+            nfds++;
+    }
+
+    if (nfds == 0)
+        return -1;
+
+    pfds = calloc(nfds, sizeof(*pfds));
+    indices = calloc(nfds, sizeof(*indices));
+    if (!pfds || !indices) {
+        free(pfds);
+        free(indices);
+        return -1;
+    }
+
+    nfds = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (devices[i].fd < 0 || (only != SIZE_MAX && i != only))
+            continue;
+
+        pfds[nfds].fd = devices[i].fd;
+        pfds[nfds].events = POLLIN;
+        indices[nfds] = i;
+        nfds++;
+    }
+
+    rc = poll(pfds, nfds, timeout_ms);
+    if (rc < 0) {
+        free(pfds);
+        free(indices);
+        return -1;
+    }
+
+    if (rc == 0) {
+        free(pfds);
+        free(indices);
+        return 0;
+    }
+
+    for (size_t i = 0; i < nfds; i++) {
+        if (!(pfds[i].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)))
+            continue;
+
+        for (;;) {
+            struct input_event ev;
+            ssize_t got = read(pfds[i].fd, &ev, sizeof(ev));
+
+            if (got == (ssize_t)sizeof(ev)) {
+                if (ev.type == EV_KEY && ev.value == 1) {
+                    *which = indices[i];
+                    *code = (int)ev.code;
+                    free(pfds);
+                    free(indices);
+                    return 1;
+                }
+                continue;
+            }
+
+            if (got < 0 && errno == EINTR)
+                continue;
+            break;
+        }
+    }
+
+    free(pfds);
+    free(indices);
+    return 0;
+}
+
+/*
  * Unknown devices first, then keyboards, then paddles, and within a group
  * in natural event-number order (event2 before event10).
  */

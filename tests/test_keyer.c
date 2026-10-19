@@ -1005,6 +1005,104 @@ static int run_device_list_tests(void)
     return failures;
 }
 
+/* ---------------- paddle tap detection ---------------- */
+
+static int run_tap_tests(void)
+{
+    int failures = 0;
+    input_device_t devices[2];
+    int fds[2][2];
+    size_t which;
+    int code;
+    struct input_event e;
+
+    memset(devices, 0, sizeof(devices));
+    devices[0].fd = -1;
+    devices[1].fd = -1;
+
+    if (pipe2(fds[0], O_NONBLOCK) < 0) {
+        return 1;
+    }
+    if (pipe2(fds[1], O_NONBLOCK) < 0) {
+        close(fds[0][0]);
+        close(fds[0][1]);
+        return 1;
+    }
+
+    devices[0].fd = fds[0][0];
+    devices[1].fd = fds[1][0];
+
+    /* Nothing queued: timeout, and the output index is untouched. */
+    which = 99;
+    code = 0;
+    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
+        which != 99)
+        failures++;
+
+    /* A press on the second device reports its index and key code. */
+    e = make_event(EV_KEY, KEY_COMMA, 1);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    which = 99;
+    code = 0;
+    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 100, &which, &code) != 1 ||
+        which != 1 || code != KEY_COMMA)
+        failures++;
+
+    /* Releases and autorepeat are not presses. */
+    e = make_event(EV_KEY, KEY_COMMA, 0);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    e = make_event(EV_KEY, KEY_COMMA, 2);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    which = 99;
+    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
+        which != 99)
+        failures++;
+
+    /* Filtering to one device works. */
+    e = make_event(EV_KEY, KEY_DOT, 1);
+    if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    which = 99;
+    code = 0;
+    if (wait_for_paddle_press(devices, 2, 1, 100, &which, &code) != 1 ||
+        which != 1 || code != KEY_DOT)
+        failures++;
+
+    /* A press on the other device is ignored while filtering. */
+    e = make_event(EV_KEY, KEY_LEFTCTRL, 1);
+    if (write(fds[0][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
+        failures++;
+    which = 99;
+    if (wait_for_paddle_press(devices, 2, 1, 10, &which, &code) != 0 ||
+        which != 99)
+        failures++;
+
+    /* Draining removes that pending press. */
+    drain_device_events(devices, 2);
+    which = 99;
+    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
+        which != 99)
+        failures++;
+
+    /* Invalid filter index and no pollable devices are errors. */
+    if (wait_for_paddle_press(devices, 2, 2, 10, &which, &code) != -1)
+        failures++;
+    devices[0].fd = -1;
+    devices[1].fd = -1;
+    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != -1)
+        failures++;
+
+    close(fds[0][0]);
+    close(fds[0][1]);
+    close(fds[1][0]);
+    close(fds[1][1]);
+
+    return failures;
+}
+
 /* ---------------- runtime controls ---------------- */
 
 static int run_control_tests(void)
@@ -1435,6 +1533,7 @@ int main(void)
     failures += run_decode_tests();
     failures += run_arg_tests();
     failures += run_device_list_tests();
+    failures += run_tap_tests();
     failures += run_control_tests();
     failures += run_control_pipe_test();
     failures += run_driver_tests();
