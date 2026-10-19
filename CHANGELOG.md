@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--setup`: interactively choose the paddle device by tapping the dot and
+  dash levers, which also learns both key codes. Starts with the default
+  speed, pitch, level, and weighting. A keyboard-like device defaults to
+  `nograb`; a paddle defaults to exclusive grab. If both taps use the same
+  key, the wizard offers straight-key mode.
 - `--list-devices` (`-L`): list readable `/dev/input/event*` devices with a
   keyboard/paddle guess and a note when the default LEFTCTRL/RIGHTCTRL
   paddle keys are reported. Devices are grouped (unknown, keyboard, paddle)

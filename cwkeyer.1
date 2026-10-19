@@ -21,6 +21,9 @@ cwkeyer \- low-latency iambic CW sidetone keyer
 .br
 .B cwkeyer
 .B \-\-list\-devices
+.br
+.B cwkeyer
+.B \-\-setup
 .SH DESCRIPTION
 .B cwkeyer
 reads an evdev keyboard-emulating paddle adapter and generates an ALSA
@@ -112,6 +115,20 @@ to disable them. The
 or
 .B paddle
 guess is a hint only and is not used to select a device.
+.TP
+.B \-\-setup
+Interactively choose the paddle device by tapping the dot lever and then
+the dash lever. The device and both key codes are learned from the taps,
+so the
+.I /dev/input/eventX
+name is not needed. Starts with the default speed, pitch, level, and
+weighting, all of which remain adjustable at runtime. A device that looks
+like a normal keyboard defaults to
+.B nograb
+and a paddle defaults to exclusive grab. If both taps use the same key,
+.B cwkeyer
+offers straight-key mode. Requires an interactive terminal on standard
+input.
 .SH ENVIRONMENT
 .TP
 .B CW_ALSA_DEVICE

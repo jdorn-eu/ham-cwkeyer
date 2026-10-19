@@ -40,7 +40,7 @@ The build is deliberately strict by default: `-Werror` plus a broad warning set 
 - `tests/test_evdev.c` — `evdev_thread()` fed through a FIFO standing in for the input device: press/release update the paddle state, the press edge is latched, and state is cleared on exit.
 - `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation.
 
-The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `lookup_key`), input-device classification for `--list-devices`, runtime control keys, and a real `main()` startup/failure/shutdown path.
+The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `lookup_key`), input-device classification for `--list-devices`, paddle tap detection, setup prompts, runtime control keys, and a real `main()` startup/failure/shutdown path.
 
 There is also an optional differential test against the real UnixCW libcw keyer: `make test-libcw` drives libcw's iambic graph and our mode B core with identical random paddle schedules and compares the element sequences (200k trials, no mismatches). It needs a built unixcw checkout; set `LIBCW_DIR` if it is not at `../unixcw-code`. It is not part of `make test` or CI because of that external dependency.
 
@@ -92,6 +92,7 @@ sudo usermod -aG input $USER   # re-login after this
 ## Run
 First check for the correct device: `sudo libinput list-devices` or `sudo evtest` are your friend. If you want to use your keyboard, that's usually `/dev/input/event3`. In that case, add the `nograb` parameter so you can still send SIGINT to close the program.
 ```
+./cwkeyer --setup                              # tap your paddles to pick the device
 ./cwkeyer /dev/input/eventX                    # 12 wpm, 800 Hz
 ./cwkeyer /dev/input/eventX 25 700             # 25 wpm, 700 Hz
 ./cwkeyer /dev/input/eventX 25 700 COMMA DOT   # remap dit/dah keys
@@ -106,6 +107,13 @@ the shell prompt. Each group is sorted by device number, and devices that
 report the default LEFTCTRL/RIGHTCTRL paddle keys are marked. The category
 names are colored when stdout is a terminal; set `NO_COLOR` to turn that
 off.
+`./cwkeyer --setup` is the guided version: it asks you to tap the dot lever
+and then the dash lever, learns the device and both key codes, and starts
+with the defaults. It does not need the `/dev/input/eventX` name. A device
+that looks like a normal keyboard defaults to `nograb`; a dedicated paddle
+defaults to exclusive grab. If both taps use the same key, it offers
+straight-key mode. Speed, pitch, level, and weighting stay at their defaults
+and remain adjustable while running.
 The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). Running `./cwkeyer` with no arguments or `./cwkeyer --help` lists the known key names; raw evdev key codes work too.
 
 While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty). Terminal input queued while the keyer runs is discarded on exit, so keystrokes do not reappear at the shell prompt. Ctrl+C, SIGTERM, SIGHUP, and SIGQUIT stop it cleanly and restore the terminal and the evdev grab. Ctrl+Z suspends it properly: a dedicated thread releases the terminal and grab before stopping and re-establishes them on resume, so the shell stays usable while it is suspended. Ordinary stop/suspend operations run outside asynchronous signal handlers and are serialized with device and terminal startup/shutdown. A fatal crash (for example SIGSEGV) still takes the kernel's default action; terminal restoration cannot be guaranteed after a crash. If needed, run `stty sane` to repair the tty.
