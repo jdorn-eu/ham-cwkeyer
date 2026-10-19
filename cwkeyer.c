@@ -350,7 +350,7 @@ static void usage(const char *prog)
 {
     fprintf(stderr,
         "usage: %s /dev/input/eventX [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode] [straight]\n"
-        "       %s --help | --version | --list-devices\n"
+        "       %s --help | --version | --list-devices | --setup\n"
         "\n"
         "Examples:\n"
         "  %s /dev/input/eventX\n"
@@ -386,6 +386,10 @@ static void usage(const char *prog)
         "            List readable /dev/input/event* devices, grouped as\n"
         "            unknown, keyboard, or paddle, and exit. Colors are\n"
         "            used only on a terminal; set NO_COLOR to disable them.\n"
+        "  --setup   Choose the paddle device by tapping the levers, then\n"
+        "            start with the default speed, pitch, level, and\n"
+        "            weighting. A device that looks like a keyboard\n"
+        "            defaults to nograb.\n"
         "\n"
         "While running, terminal echo is disabled so keystrokes do not\n"
         "print in the window; the previous terminal state is restored\n"
@@ -1138,11 +1142,9 @@ static void close_input_devices(input_device_t *devices, size_t count)
 
 /*
  * Discard events already queued on the discovered devices, so a key pressed
- * before the prompt cannot select a device.  The setup wizard (next step)
- * is the only caller; the attribute keeps this intermediate build clean.
+ * before the prompt cannot select a device.
  */
-static void __attribute__((unused))
-drain_device_events(const input_device_t *devices, size_t count)
+static void drain_device_events(const input_device_t *devices, size_t count)
 {
     for (size_t i = 0; i < count; i++) {
         if (devices[i].fd < 0)
@@ -1165,12 +1167,9 @@ drain_device_events(const input_device_t *devices, size_t count)
  * Wait for the next key press on the discovered devices. `only` is a device
  * index for the second (dah) tap, or SIZE_MAX to watch every device.
  * Autorepeat and key releases are ignored. Returns 1 on a press, 0 on
- * timeout, and -1 when there is nothing to poll or poll() fails.  The setup
- * wizard (next step) is the only caller; the attribute keeps this
- * intermediate build clean.
+ * timeout, and -1 when there is nothing to poll or poll() fails.
  */
-static int __attribute__((unused))
-wait_for_paddle_press(const input_device_t *devices, size_t count,
+static int wait_for_paddle_press(const input_device_t *devices, size_t count,
                                  size_t only, int timeout_ms,
                                  size_t *which, int *code)
 {
@@ -1250,6 +1249,203 @@ wait_for_paddle_press(const input_device_t *devices, size_t count,
     free(pfds);
     free(indices);
     return 0;
+}
+
+#define SETUP_TAP_TIMEOUT_MS 15000
+
+static void flush_stdin(void)
+{
+    if (isatty(STDIN_FILENO))
+        (void)tcflush(STDIN_FILENO, TCIFLUSH);
+}
+
+/*
+ * Read one yes/no answer without stdio buffering.  This keeps the answer
+ * logic testable through a pipe and leaves stdin ready for the runtime
+ * control thread.
+ */
+static int prompt_yes_no(const char *question, int default_yes)
+{
+    char line[64];
+
+    flush_stdin();
+
+    for (;;) {
+        size_t len = 0;
+
+        fprintf(stderr, "%s [%s] ", question, default_yes ? "Y/n" : "y/N");
+        fflush(stderr);
+
+        for (;;) {
+            char ch;
+            ssize_t got = read(STDIN_FILENO, &ch, 1);
+
+            if (got == 1) {
+                if (ch == '\n' || ch == '\r')
+                    break;
+                if (len + 1 < sizeof(line))
+                    line[len++] = ch;
+                continue;
+            }
+            if (got < 0 && errno == EINTR)
+                continue;
+            if (got < 0 || len == 0) {
+                fputc('\n', stderr);
+                return -1;
+            }
+            break;
+        }
+
+        line[len] = '\0';
+
+        char *answer = line;
+        while (*answer == ' ' || *answer == '\t')
+            answer++;
+
+        if (*answer == '\0')
+            return default_yes;
+        if (*answer == 'y' || *answer == 'Y')
+            return 1;
+        if (*answer == 'n' || *answer == 'N')
+            return 0;
+
+        fprintf(stderr, "Please answer y or n.\n");
+    }
+}
+
+/*
+ * Interactive device selection.  Tap the two levers to learn both key codes
+ * and the device, then confirm the grab policy.  Speed, pitch, level, and
+ * weighting keep their normal defaults and runtime controls.
+ */
+static int run_setup_wizard(char *device_path, size_t path_size)
+{
+    input_device_t *devices = NULL;
+    size_t count = 0;
+    size_t selected = SIZE_MAX;
+    int dit = 0;
+    int dah = 0;
+    int straight = 0;
+    int result = -1;
+
+    if (discover_input_devices(&devices, &count) < 0)
+        return -1;
+
+    if (count == 0) {
+        fprintf(stderr, "no /dev/input/event* devices found\n");
+        goto out;
+    }
+
+    for (;;) {
+        size_t which = SIZE_MAX;
+        size_t second = SIZE_MAX;
+        int code = 0;
+        int rc;
+
+        drain_device_events(devices, count);
+        fprintf(stderr,
+                "Tap the DOT (dit) paddle. Release it after the tap.\n"
+                "  (Ctrl+C cancels setup)\n");
+        rc = wait_for_paddle_press(devices, count, SIZE_MAX,
+                                   SETUP_TAP_TIMEOUT_MS, &which, &code);
+        if (rc < 0) {
+            fprintf(stderr,
+                    "no readable input devices; check your udev rules "
+                    "(see the README)\n");
+            goto out;
+        }
+        if (rc == 0) {
+            fprintf(stderr,
+                    "no paddle press detected within %d seconds\n",
+                    SETUP_TAP_TIMEOUT_MS / 1000);
+            if (prompt_yes_no("Try again?", 1) != 1)
+                goto out;
+            continue;
+        }
+
+        flush_stdin();
+        fprintf(stderr, "Detected %s (%s), key %d\n",
+                devices[which].name, devices[which].path, code);
+
+        drain_device_events(devices, count);
+        fprintf(stderr,
+                "Now tap the DASH (dah) paddle on the same device.\n");
+        rc = wait_for_paddle_press(devices, count, which,
+                                   SETUP_TAP_TIMEOUT_MS, &second, &dah);
+        if (rc < 0) {
+            fprintf(stderr, "cannot poll the selected input device\n");
+            goto out;
+        }
+        if (rc == 0) {
+            fprintf(stderr,
+                    "no paddle press detected within %d seconds\n",
+                    SETUP_TAP_TIMEOUT_MS / 1000);
+            if (prompt_yes_no("Try again?", 1) != 1)
+                goto out;
+            continue;
+        }
+
+        flush_stdin();
+        selected = second;
+        dit = code;
+        straight = 0;
+
+        if (dit == dah) {
+            int straight_choice;
+
+            fprintf(stderr,
+                    "Both taps used key %d; this looks like a straight key.\n",
+                    dit);
+            straight_choice = prompt_yes_no("Use straight-key mode?", 1);
+            if (straight_choice < 0)
+                goto out;
+            if (!straight_choice)
+                continue;
+            straight = 1;
+            dah = dit;
+        }
+
+        int use_it = prompt_yes_no("Use this device?", 1);
+        if (use_it < 0)
+            goto out;
+        if (!use_it)
+            continue;
+        break;
+    }
+
+    fprintf(stderr, "Using %s (%s), detected as %s.\n",
+            devices[selected].name, devices[selected].path,
+            device_kind_name(devices[selected].kind));
+
+    int default_grab = devices[selected].kind == DEVICE_KIND_PADDLE;
+    int grab = prompt_yes_no("Take exclusive control of this device?",
+                             default_grab);
+    if (grab < 0)
+        goto out;
+
+    if (grab && devices[selected].kind == DEVICE_KIND_KEYBOARD) {
+        int sure;
+
+        fprintf(stderr,
+                "warning: grabbing a keyboard hides it from the desktop and "
+                "terminal; Ctrl+C may not reach cwkeyer.\n");
+        sure = prompt_yes_no("Continue with exclusive grab?", 0);
+        if (sure < 0)
+            goto out;
+        if (!sure)
+            grab = 0;
+    }
+
+    dit_code = dit;
+    dah_code = dah;
+    straight_mode = straight;
+    do_grab = grab;
+    copy_device_path(device_path, path_size, devices[selected].path);
+    result = 0;
+
+out:
+    close_input_devices(devices, count);
+    return result;
 }
 
 /*
@@ -2325,6 +2521,8 @@ int main(int argc, char **argv)
     int field = 0;
     int audio_rc;
     unsigned int actual_rate = 0;
+    char setup_path[64];
+    char *device_path = NULL;
 
     if (argc == 2 &&
         (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
@@ -2344,9 +2542,24 @@ int main(int argc, char **argv)
         return list_input_devices(stdout) == 0 ? 0 : 1;
     }
 
-    if (argc < 2) {
-        usage(argv[0]);
-        return 1;
+    if (argc >= 2 && strcmp(argv[1], "--setup") == 0) {
+        if (argc != 2) {
+            usage(argv[0]);
+            return 1;
+        }
+        if (!isatty(STDIN_FILENO)) {
+            fprintf(stderr, "--setup needs an interactive terminal on stdin\n");
+            return 1;
+        }
+        if (run_setup_wizard(setup_path, sizeof(setup_path)) < 0)
+            return 1;
+        device_path = setup_path;
+    } else {
+        if (argc < 2) {
+            usage(argv[0]);
+            return 1;
+        }
+        device_path = argv[1];
     }
 
     /*
@@ -2403,7 +2616,7 @@ int main(int argc, char **argv)
         field++;
     }
 
-    if (dit_code == dah_code) {
+    if (dit_code == dah_code && !straight_mode) {
         fprintf(stderr, "dit_key and dah_key must be different\n");
         return 1;
     }
@@ -2431,6 +2644,7 @@ int main(int argc, char **argv)
         fprintf(stderr,
                 "warning: decode is ignored in straight-key mode\n");
 
+    fprintf(stderr, "input device: %s\n", device_path);
     fprintf(stderr,
             "CW keyer: %.2f WPM, %.2f Hz, dit code %d, dah code %d, %s, "
             "%s, RC filter %u ms, level %d%%, weight %+.1f ms%s\n",
@@ -2453,7 +2667,7 @@ int main(int argc, char **argv)
     }
     audio_rate = actual_rate;
 
-    err = pthread_create(&evdev_tid, NULL, evdev_thread, argv[1]);
+    err = pthread_create(&evdev_tid, NULL, evdev_thread, device_path);
     if (err != 0) {
         fprintf(stderr, "pthread_create(evdev): %s\n", strerror(err));
         stop_signal_thread();

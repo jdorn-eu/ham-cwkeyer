@@ -1103,6 +1103,56 @@ static int run_tap_tests(void)
     return failures;
 }
 
+/* ---------------- setup prompts ---------------- */
+
+static int run_prompt_tests(void)
+{
+    int failures = 0;
+    int fds[2];
+    int saved_stdin;
+    int saved_err;
+    const char input[] = "y\nN\n\n\nx\nn\n";
+    size_t input_len = sizeof(input) - 1;
+
+    saved_stdin = dup(STDIN_FILENO);
+    saved_err = quiet_stderr();
+    if (saved_stdin < 0 || pipe(fds) < 0) {
+        if (saved_stdin >= 0)
+            close(saved_stdin);
+        unquiet_stderr(saved_err);
+        return 1;
+    }
+
+    if (write(fds[1], input, input_len) != (ssize_t)input_len ||
+        dup2(fds[0], STDIN_FILENO) < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        close(saved_stdin);
+        unquiet_stderr(saved_err);
+        return 1;
+    }
+    close(fds[0]);
+    close(fds[1]);
+
+    if (prompt_yes_no("test", 0) != 1)      /* y */
+        failures++;
+    if (prompt_yes_no("test", 1) != 0)      /* N */
+        failures++;
+    if (prompt_yes_no("test", 1) != 1)      /* empty -> default yes */
+        failures++;
+    if (prompt_yes_no("test", 0) != 0)      /* empty -> default no */
+        failures++;
+    if (prompt_yes_no("test", 1) != 0)      /* invalid, then n */
+        failures++;
+    if (prompt_yes_no("test", 1) != -1)     /* EOF */
+        failures++;
+
+    dup2(saved_stdin, STDIN_FILENO);
+    close(saved_stdin);
+    unquiet_stderr(saved_err);
+    return failures;
+}
+
 /* ---------------- runtime controls ---------------- */
 
 static int run_control_tests(void)
@@ -1260,24 +1310,33 @@ static int run_main_tests(void)
     char p8[] = "nograb";
     char p9[] = "decode";
     char p10[] = "--list-devices";
+    char p11[] = "--setup";
 
     char *help_argv[] = {p0, p1, NULL};
     char *ver_argv[] = {p0, p2, NULL};
     char *list_argv[] = {p0, p10, NULL};
+    char *setup_argv[] = {p0, p11, NULL};
     char *noargs_argv[] = {p0, NULL};
     char *run_argv[] = {p0, p3, p4, p5, p6, p7, p8, p9, NULL};
 
     int saved_out = dup(STDOUT_FILENO);
     int saved_err = quiet_stderr();
     int devnull = open("/dev/null", O_WRONLY);
+    int saved_in = dup(STDIN_FILENO);
+    int devnull_in = open("/dev/null", O_RDONLY);
+
     if (devnull >= 0)
         dup2(devnull, STDOUT_FILENO);
+    if (devnull_in >= 0)
+        dup2(devnull_in, STDIN_FILENO);
 
     if (cwkeyer_program_main(2, help_argv) != 0)
         failures++;
     if (cwkeyer_program_main(2, ver_argv) != 0)
         failures++;
     if (cwkeyer_program_main(2, list_argv) != 0)
+        failures++;
+    if (devnull_in >= 0 && cwkeyer_program_main(2, setup_argv) != 1)
         failures++;
     if (cwkeyer_program_main(1, noargs_argv) != 1)
         failures++;
@@ -1293,19 +1352,8 @@ static int run_main_tests(void)
     stop_requested = 0;
     ASTORE(fatal_error, 0);
 
-    int saved_in = dup(STDIN_FILENO);
-    int devnull_in = open("/dev/null", O_RDONLY);
-    if (devnull_in >= 0)
-        dup2(devnull_in, STDIN_FILENO);
-
     int rc = cwkeyer_program_main(8, run_argv);
 
-    if (saved_in >= 0) {
-        dup2(saved_in, STDIN_FILENO);
-        close(saved_in);
-    }
-    if (devnull_in >= 0)
-        close(devnull_in);
     if (rc != 1)
         failures++;
 
@@ -1313,6 +1361,13 @@ static int run_main_tests(void)
      * piped, so a late flush would otherwise leak to the real stdout. */
     fflush(stdout);
     fflush(stderr);
+
+    if (saved_in >= 0) {
+        dup2(saved_in, STDIN_FILENO);
+        close(saved_in);
+    }
+    if (devnull_in >= 0)
+        close(devnull_in);
 
     if (devnull >= 0) {
         dup2(saved_out, STDOUT_FILENO);
@@ -1534,6 +1589,7 @@ int main(void)
     failures += run_arg_tests();
     failures += run_device_list_tests();
     failures += run_tap_tests();
+    failures += run_prompt_tests();
     failures += run_control_tests();
     failures += run_control_pipe_test();
     failures += run_driver_tests();
