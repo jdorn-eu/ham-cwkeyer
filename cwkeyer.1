@@ -4,6 +4,8 @@
 cwkeyer \- low-latency iambic CW sidetone keyer
 .SH SYNOPSIS
 .B cwkeyer
+.br
+.B cwkeyer
 .I /dev/input/eventX
 .RI [ wpm ]
 .RI [ freq_hz ]
@@ -118,8 +120,10 @@ guess is a hint only and is not used to select a device.
 .TP
 .B \-\-setup
 Interactively choose the paddle device by tapping the dot lever and then
-the dash lever. The device and both key codes are learned from the taps,
-so the
+the dash lever. This is also what a bare
+.B cwkeyer
+invocation does on an interactive terminal. The device and both key codes
+are learned from the taps, so the
 .I /dev/input/eventX
 name is not needed. Starts with the default speed, pitch, level, and
 weighting, all of which remain adjustable at runtime. A device that looks

@@ -92,6 +92,7 @@ sudo usermod -aG input $USER   # re-login after this
 ## Run
 First check for the correct device: `sudo libinput list-devices` or `sudo evtest` are your friend. If you want to use your keyboard, that's usually `/dev/input/event3`. In that case, add the `nograb` parameter so you can still send SIGINT to close the program.
 ```
+./cwkeyer                                      # on a terminal: tap-to-select setup
 ./cwkeyer --setup                              # tap your paddles to pick the device
 ./cwkeyer /dev/input/eventX                    # 12 wpm, 800 Hz
 ./cwkeyer /dev/input/eventX 25 700             # 25 wpm, 700 Hz
@@ -114,7 +115,9 @@ that looks like a normal keyboard defaults to `nograb`; a dedicated paddle
 defaults to exclusive grab. If both taps use the same key, it offers
 straight-key mode. Speed, pitch, level, and weighting stay at their defaults
 and remain adjustable while running.
-The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). Running `./cwkeyer` with no arguments or `./cwkeyer --help` lists the known key names; raw evdev key codes work too.
+With no arguments on an interactive terminal, `./cwkeyer` runs the same
+setup; without a terminal it prints the usage text.
+The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). `./cwkeyer --help` lists the known key names; raw evdev key codes work too.
 
 While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty). Terminal input queued while the keyer runs is discarded on exit, so keystrokes do not reappear at the shell prompt. Ctrl+C, SIGTERM, SIGHUP, and SIGQUIT stop it cleanly and restore the terminal and the evdev grab. Ctrl+Z suspends it properly: a dedicated thread releases the terminal and grab before stopping and re-establishes them on resume, so the shell stays usable while it is suspended. Ordinary stop/suspend operations run outside asynchronous signal handlers and are serialized with device and terminal startup/shutdown. A fatal crash (for example SIGSEGV) still takes the kernel's default action; terminal restoration cannot be guaranteed after a crash. If needed, run `stty sane` to repair the tty.
 
