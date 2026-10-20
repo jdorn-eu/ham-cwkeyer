@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The macOS device argument may stop at a field boundary: the last field is the
+  USB port, so a command written against one port stopped working when the
+  adapter was moved. `04d8:01a6` now selects the adapter in any port, and an
+  ambiguous selector lists the devices it matched.
+- The first render-callback transition is no longer reported as a dropout. A
+  unit that has just started can re-anchor its sample timeline while it
+  settles, which is not audio anyone could have heard.
+
 - The command line is more forgiving about order and more direct about
   mistakes: options and keywords may appear anywhere, and `--setup` can be
   combined with the settings it should start with (`--setup 25 700 mix-mic`

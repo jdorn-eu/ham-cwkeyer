@@ -119,10 +119,12 @@ No driver is needed. A paddle adapter is a plain USB HID keyboard on macOS,
 which is exactly what the HRS PaddleAdapter reports: its report descriptor
 offers nothing but the eight modifier usages 0xE0..0xE7, so the default
 LEFTCTRL/RIGHTCTRL paddle mapping works unchanged. Devices are named
-`vendor:product:location` (for example `04d8:01a6:01110000`), which is what
-`--list-devices` prints and what the keyer takes as its device argument; the
-built-in keyboard usually reports zeros for vendor and product and is
-distinguished by its location instead.
+`vendor:product:location` (for example `04d8:01a6:00110000`), which is what
+`--list-devices` prints and what the keyer takes as its device argument. The
+last field is the USB port, so it changes when the adapter is moved; the
+argument may therefore stop at a field boundary, and `04d8:01a6` selects the
+adapter wherever it is plugged in as long as that is unambiguous. The built-in
+keyboard reports zeros for vendor and product, so it needs the full id.
 
 Three things differ from Linux, all of them forced by the platform:
 

@@ -130,6 +130,26 @@ static void device_id(IOHIDDeviceRef dev, char *out, size_t size)
                    (unsigned)dev_int(dev, CFSTR(kIOHIDLocationIDKey), 0));
 }
 
+/*
+ * A device id may be cut short at any field boundary.  The location field is
+ * the USB port, so it changes when the adapter is moved and a command written
+ * against one port would stop working; "04d8:01a6" selects the adapter
+ * wherever it is plugged in, as long as that is unambiguous.
+ */
+static int device_id_matches(const char *id, const char *want)
+{
+    size_t n = strlen(want);
+    size_t len = strlen(id);
+
+    if (n == 0 || n > len)
+        return 0;
+    if (strncmp(id, want, n) != 0)
+        return 0;
+
+    /* Do not let "04d8:01" match "04d8:01a6:...": a field is all or nothing. */
+    return n == len || id[n] == ':';
+}
+
 /* Which keyboard usages the device can report. */
 static void collect_usages(IOHIDDeviceRef dev, unsigned char usages[256])
 {
@@ -640,20 +660,38 @@ void *input_backend_thread(void *arg)
         return NULL;
     }
 
-    for (size_t i = 0; i < count; i++) {
-        if (strcmp(devices[i].id, wanted ? wanted : "") == 0) {
-            slot = i;
-            break;
-        }
-    }
+    {
+        const char *want = wanted ? wanted : "";
+        size_t matches = 0;
 
-    if (slot == SIZE_MAX) {
-        fprintf(stderr, "no input device with id '%s' is attached\n",
-                wanted ? wanted : "");
-        fprintf(stderr, "run --list-devices to see what is available\n");
-        input_backend_close_devices(devices, count);
-        request_stop(1);
-        return NULL;
+        for (size_t i = 0; i < count; i++) {
+            if (!device_id_matches(devices[i].id, want))
+                continue;
+            if (matches == 0)
+                slot = i;
+            matches++;
+        }
+
+        if (matches == 0) {
+            fprintf(stderr, "no input device with id '%s' is attached\n", want);
+            fprintf(stderr, "run --list-devices to see what is available\n");
+            input_backend_close_devices(devices, count);
+            request_stop(1);
+            return NULL;
+        }
+
+        if (matches > 1) {
+            fprintf(stderr, "'%s' matches %zu devices; use the full id:\n",
+                    want, matches);
+            for (size_t i = 0; i < count; i++) {
+                if (device_id_matches(devices[i].id, want))
+                    fprintf(stderr, "  %s  \"%s\"\n", devices[i].id,
+                            devices[i].name);
+            }
+            input_backend_close_devices(devices, count);
+            request_stop(1);
+            return NULL;
+        }
     }
 
     dev = (IOHIDDeviceRef)devices[slot].handle;
@@ -762,8 +800,8 @@ void input_backend_usage(FILE *out, usage_part_t part, const char *prog)
         fprintf(out,
             "  %s --setup                 learn the device by tapping\n"
             "  %s --list-devices          show HID keyboards and their ids\n"
-            "  %s 04d8:01a6:01110000      HRS PaddleAdapter\n"
-            "  %s 04d8:01a6:01110000 25 700 COMMA DOT\n"
+            "  %s 04d8:01a6              HRS PaddleAdapter, any USB port\n"
+            "  %s 04d8:01a6 25 700 COMMA DOT\n"
             "  %s 0000:0000:000000a7 12 800 COMMA DOT nograb\n",
             prog, prog, prog, prog, prog);
         break;

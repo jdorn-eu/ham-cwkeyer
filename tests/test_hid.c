@@ -180,8 +180,27 @@ static void test_idle_mode(void)
     expect(!hid.fired, "an idle callback satisfied a wait");
 }
 
+/* The device argument may stop at a field boundary, because the last field is
+ * the USB port and changes when the adapter is moved. */
+static void test_device_id_matching(void)
+{
+    const char *id = "04d8:01a6:00110000";
+
+    expect(device_id_matches(id, id), "an exact id did not match");
+    expect(device_id_matches(id, "04d8:01a6"), "vendor:product did not match");
+    expect(device_id_matches(id, "04d8"), "a vendor alone did not match");
+    expect(!device_id_matches(id, "04d8:01"), "a half field matched");
+    expect(!device_id_matches(id, "04d8:01a6:001100000"),
+           "a selector longer than the id matched");
+    expect(!device_id_matches(id, "04d9"), "the wrong vendor matched");
+    expect(!device_id_matches(id, "04d8:01a6:"), "a trailing colon matched");
+    expect(!device_id_matches(id, ""), "an empty selector matched");
+    expect(!device_id_matches("", "04d8"), "an empty id matched");
+}
+
 int main(void)
 {
+    test_device_id_matching();
     test_run_mode();
     test_wait_press();
     test_wait_release();

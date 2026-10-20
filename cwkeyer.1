@@ -55,10 +55,15 @@ keyboard and no driver or kernel extension is involved. The device argument
 is then
 .I vendor:product:location
 (for example
-.IR 04d8:01a6:01110000 )
+.IR 04d8:01a6:00110000 )
 as printed by
-.BR \-\-list\-devices ,
-and the built-in keyboard is usable as a paddle with
+.BR \-\-list\-devices .
+The last field is the USB port, so it changes when the adapter is moved; the
+argument may stop at a field boundary, and
+.I 04d8:01a6
+selects the adapter in any port as long as that is unambiguous. The built-in
+keyboard reports zeros for vendor and product, so it needs the full id, and it
+is usable as a paddle with
 .B nograb
 and your own key names.
 .PP

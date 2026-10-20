@@ -46,6 +46,7 @@ static void reset_audio(void)
     ca_rate = AUDIO_RATE;
     ca_state.gap_frames = ns_to_frames(keyer_space_ns(), ca_rate);
     ca_have_last = 0;
+    ca_callbacks = 0;
     ca_last_sample_time = 0;
     ca_last_frames = 0;
     ca_gaps = 0;
@@ -158,6 +159,14 @@ static void test_dropout_detection(void)
     make_time(&ts, 512);
     (void)ca_render(NULL, NULL, &ts, 0, 512, &list);
     expect(ca_gaps == 0, "a contiguous timeline was reported as a dropout");
+
+    /* The first transition is a settling unit, not a dropout. */
+    reset_audio();
+    make_time(&ts, 0);
+    (void)ca_render(NULL, NULL, &ts, 0, 512, &list);
+    make_time(&ts, 1376);
+    (void)ca_render(NULL, NULL, &ts, 0, 512, &list);
+    expect(ca_gaps == 0, "a settling unit was reported as a dropout");
 
     /* The host skipped 1024 frames: audio was lost. */
     make_time(&ts, 2048);

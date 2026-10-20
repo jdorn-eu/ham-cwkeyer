@@ -51,6 +51,7 @@ static audio_state_t ca_state;
 /* Diagnostics, reported through the core's exit summary. */
 static uint64_t ca_last_sample_time;
 static uint32_t ca_last_frames;
+static unsigned int ca_callbacks;
 static int ca_have_last;
 static unsigned int ca_gaps;
 static double ca_delay_min = 1e9, ca_delay_max, ca_delay_sum;
@@ -163,7 +164,12 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
      * contiguous mSampleTime means the callback ran on time, a jump means the
      * host skipped audio (a dropout) and the operator heard a gap.
      */
-    if (ca_have_last) {
+    /*
+     * Skip the first transition: a unit that has just started can re-anchor
+     * its sample timeline while it settles, which is not audio the operator
+     * could have heard.
+     */
+    if (ca_have_last && ca_callbacks >= 2) {
         double expect = (double)ca_last_sample_time + (double)ca_last_frames;
 
         if (ts->mSampleTime < expect - 0.5 || ts->mSampleTime > expect + 0.5) {
@@ -179,6 +185,7 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
     ca_last_sample_time = (uint64_t)ts->mSampleTime;
     ca_last_frames = frames;
     ca_have_last = 1;
+    ca_callbacks++;
 
     if (ts->mFlags & kAudioTimeStampHostTimeValid) {
         double lead = host_seconds(ts->mHostTime) -
