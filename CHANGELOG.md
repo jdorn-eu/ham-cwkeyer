@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The command line is more forgiving about order and more direct about
+  mistakes: options and keywords may appear anywhere, and `--setup` can be
+  combined with the settings it should start with (`--setup 25 700 mix-mic`
+  reads the speed, pitch, and key names instead of a device path). A bad
+  argument now gets one line naming the problem plus a pointer to `--help`
+  instead of the whole usage text, an argument starting with `-` is reported
+  as an unknown option rather than being taken for a device path, and
+  `--help` is written to standard output so it can be piped or paged.
+
 - `--setup` and `--list-devices` now live in the portable core and are built
   on five backend primitives (`discover`, `close_devices`, `drain`,
   `wait_press`, `wait_release`), so the two platforms share one wizard and

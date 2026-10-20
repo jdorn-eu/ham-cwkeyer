@@ -175,6 +175,8 @@ First check for the correct device: `sudo libinput list-devices` or `sudo evtest
 ```
 ./cwkeyer                                      # on a terminal: tap-to-select setup
 ./cwkeyer --setup                              # tap your paddles to pick the device
+./cwkeyer --setup 25 700                       # ... and start at 25 wpm, 700 Hz
+./cwkeyer --setup mix-mic                      # ... with mic mixing (macOS)
 ./cwkeyer /dev/input/eventX                    # 12 wpm, 800 Hz
 ./cwkeyer /dev/input/eventX 25 700             # 25 wpm, 700 Hz
 ./cwkeyer /dev/input/eventX 25 700 COMMA DOT   # remap dit/dah keys
@@ -182,6 +184,12 @@ First check for the correct device: `sudo libinput list-devices` or `sudo evtest
 ./cwkeyer /dev/input/event3 nograb decode      # also print keyed morse as text
 ./cwkeyer /dev/input/eventX straight            # paddles act as a straight key
 ```
+Options and keywords may appear anywhere, and `--setup` can be combined with
+the settings it should start with, as in the second and third lines above.
+A bad argument gets one line and a pointer to `--help`, rather than the whole
+usage text; `--help` itself is written to standard output, so it can be piped
+or paged.
+
 If you do not know which device is your adapter, `./cwkeyer --list-devices`
 groups the readable `/dev/input/event*` devices into `unknown`, `keyboard`,
 and `paddle` categories in that order, so paddles appear last and stay near

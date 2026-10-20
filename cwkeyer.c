@@ -302,25 +302,26 @@ static int install_signal_handlers(void)
     return 0;
 }
 
-static void usage(const char *prog)
+static void usage(FILE *out, const char *prog)
 {
-    fprintf(stderr, "usage: %s ", prog);
-    input_backend_usage(stderr, USAGE_DEVICE_ARG, prog);
-    fprintf(stderr,
-        " [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode] [straight]\n"
-        "       %s --help | --version | --list-devices | --setup\n"
+    fprintf(out, "usage: %s ", prog);
+    input_backend_usage(out, USAGE_DEVICE_ARG, prog);
+    fprintf(out,
+        " [wpm=12] [freq_hz=800] [dit_key] [dah_key] [options]\n"
+        "       %s --setup [wpm=12] [freq_hz=800] [dit_key] [dah_key] [options]\n"
+        "       %s --help | --version | --list-devices\n"
         "\n"
-        "Examples:\n", prog);
-    input_backend_usage(stderr, USAGE_EXAMPLES, prog);
-    fprintf(stderr,
+        "Examples:\n", prog, prog);
+    input_backend_usage(out, USAGE_EXAMPLES, prog);
+    fprintf(out,
         "\n"
         "Known key names include:\n"
         "  LEFTCTRL RIGHTCTRL LEFTSHIFT RIGHTSHIFT LEFTALT RIGHTALT\n"
         "  COMMA DOT PERIOD LEFT RIGHT LEFTBRACE RIGHTBRACE\n"
         "  INSERT DELETE Z X\n"
         "\n");
-    input_backend_usage(stderr, USAGE_KEYNOTE, prog);
-    fprintf(stderr,
+    input_backend_usage(out, USAGE_KEYNOTE, prog);
+    fprintf(out,
         "\n"
         "Options:\n"
         "  nograb    Do not take exclusive control of the input device.\n"
@@ -340,8 +341,8 @@ static void usage(const char *prog)
         "  --help    Print this help and exit.\n"
         "  --version Print the version and exit.\n"
         "  --list-devices, -L\n");
-    input_backend_usage(stderr, USAGE_DEVICE_OPTS, prog);
-    fprintf(stderr,
+    input_backend_usage(out, USAGE_DEVICE_OPTS, prog);
+    fprintf(out,
         "\n"
         "With no arguments on an interactive terminal, cwkeyer runs the\n"
         "same tap-to-select setup and then starts with the defaults.\n"
@@ -358,7 +359,7 @@ static void usage(const char *prog)
         "  CW_KEYER_WEIGHT_MS=0       Weighting, -25..25 ms; a constant time\n"
         "                             added to each mark and taken from the\n"
         "                             following space (0 is strict ITU timing)\n");
-    audio_backend_usage(stderr);
+    audio_backend_usage(out);
 }
 
 static double parse_double_arg(const char *s,
@@ -2038,6 +2039,17 @@ static void *control_thread(void *arg)
 }
 
 
+/*
+ * A short, actionable complaint.  A wall of usage text for one bad argument
+ * is not help, and the whole point of --help is that it can be asked for.
+ */
+static void argument_error(const char *prog, const char *what, const char *arg)
+{
+    fprintf(stderr, "%s: %s '%s'\n", prog, what, arg);
+    fprintf(stderr, "Try '%s --help' for more information.\n", prog);
+    exit(1);
+}
+
 int main(int argc, char **argv)
 {
     pthread_t input_tid;
@@ -2045,111 +2057,110 @@ int main(int argc, char **argv)
     pthread_t control_tid;
     int control_started = 0;
     int err;
-    int field = 0;
     int audio_rc;
     unsigned int actual_rate = 0;
     char setup_path[64];
+    char *positional[5];
+    int npositional = 0;
+    int next = 0;
+    int do_setup = 0;
     char *device_path = NULL;
-
-    if (argc == 2 &&
-        (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
-        usage(argv[0]);
-        return 0;
-    }
-
-    if (argc == 2 &&
-        (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
-        printf("cwkeyer %s\n", CWKEYER_VERSION);
-        return 0;
-    }
-
-    if (argc == 2 &&
-        (strcmp(argv[1], "--list-devices") == 0 ||
-         strcmp(argv[1], "-L") == 0)) {
-        return input_backend_list(stdout) == 0 ? 0 : 1;
-    }
-
-    if (argc >= 2 && strcmp(argv[1], "--setup") == 0) {
-        if (argc != 2) {
-            usage(argv[0]);
-            return 1;
-        }
-        if (!isatty(STDIN_FILENO)) {
-            fprintf(stderr, "--setup needs an interactive terminal on stdin\n");
-            return 1;
-        }
-        if (input_backend_setup(setup_path, sizeof(setup_path)) < 0)
-            return 1;
-        device_path = setup_path;
-    } else if (argc == 1 && isatty(STDIN_FILENO)) {
-        if (input_backend_setup(setup_path, sizeof(setup_path)) < 0)
-            return 1;
-        device_path = setup_path;
-    } else {
-        if (argc < 2) {
-            usage(argv[0]);
-            return 1;
-        }
-        device_path = argv[1];
-    }
+    const char *prog = argv[0];
 
     /*
-     * Flexible positional parser:
-     *
-     *   non-nograb arg 0: wpm
-     *   non-nograb arg 1: frequency
-     *   non-nograb arg 2: dit key
-     *   non-nograb arg 3: dah key
-     *
-     * "nograb" may appear anywhere after the device path.
+     * Options and keywords may appear anywhere, so --setup can be combined
+     * with the settings it should start with.  Positional arguments are
+     * collected first and interpreted once we know whether the wizard is
+     * choosing the device, because that decides what the first one means.
      */
-    for (int i = 2; i < argc; i++) {
-        if (strcasecmp(argv[i], "nograb") == 0) {
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+
+        if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
+            usage(stdout, prog);
+            return 0;
+        }
+
+        if (strcmp(arg, "--version") == 0 || strcmp(arg, "-V") == 0) {
+            printf("cwkeyer %s\n", CWKEYER_VERSION);
+            return 0;
+        }
+
+        if (strcmp(arg, "--list-devices") == 0 || strcmp(arg, "-L") == 0)
+            return input_backend_list(stdout) == 0 ? 0 : 1;
+
+        if (strcmp(arg, "--setup") == 0) {
+            do_setup = 1;
+            continue;
+        }
+
+        if (strcasecmp(arg, "nograb") == 0) {
             do_grab = 0;
             continue;
         }
 
-        if (strcasecmp(argv[i], "decode") == 0) {
+        if (strcasecmp(arg, "decode") == 0) {
             do_decode = 1;
             continue;
         }
 
-        if (strcasecmp(argv[i], "straight") == 0) {
+        if (strcasecmp(arg, "straight") == 0) {
             straight_mode = 1;
             continue;
         }
 
-        if (strcasecmp(argv[i], "mix-mic") == 0) {
+        if (strcasecmp(arg, "mix-mic") == 0) {
             mix_mic_mode = 1;
             continue;
         }
 
-        switch (field) {
-        case 0:
-            wpm = parse_double_arg(argv[i], "wpm", 1.0, MAX_WPM);
-            break;
+        /* A device path never starts with '-', so this is a typo. */
+        if (arg[0] == '-' && arg[1] != '\0')
+            argument_error(prog, "unknown option", arg);
 
-        case 1:
-            freq_hz = parse_double_arg(argv[i],
-                                       "freq_hz",
-                                       1.0,
-                                       (double)AUDIO_RATE / 2.0 - 1.0);
-            break;
+        if (npositional == (int)(sizeof(positional) / sizeof(positional[0])))
+            argument_error(prog, "unexpected argument", arg);
+        positional[npositional++] = argv[i];
+    }
 
-        case 2:
-            dit_code = lookup_key(argv[i]);
-            break;
+    /*
+     * With --setup the device is already chosen, so the positionals start at
+     * the speed; otherwise the first one is the device path.  Either way they
+     * are checked before the wizard runs, so a typo is reported as a typo
+     * rather than after a tap test.
+     */
+    if (!do_setup && npositional > 0)
+        device_path = positional[next++];
 
-        case 3:
-            dah_code = lookup_key(argv[i]);
-            break;
+    if (next < npositional)
+        wpm = parse_double_arg(positional[next++], "wpm", 1.0, MAX_WPM);
 
-        default:
-            usage(argv[0]);
+    if (next < npositional)
+        freq_hz = parse_double_arg(positional[next++], "freq_hz", 1.0,
+                                   (double)AUDIO_RATE / 2.0 - 1.0);
+
+    if (next < npositional)
+        dit_code = lookup_key(positional[next++]);
+
+    if (next < npositional)
+        dah_code = lookup_key(positional[next++]);
+
+    if (next < npositional)
+        argument_error(prog, "unexpected argument", positional[next]);
+
+    if (do_setup || (device_path == NULL && isatty(STDIN_FILENO))) {
+        if (!isatty(STDIN_FILENO)) {
+            fprintf(stderr,
+                    "%s: --setup needs an interactive terminal on stdin\n",
+                    prog);
             return 1;
         }
-
-        field++;
+        if (input_backend_setup(setup_path, sizeof(setup_path)) < 0)
+            return 1;
+        device_path = setup_path;
+    } else if (device_path == NULL) {
+        usage(stderr, prog);
+        return 1;
     }
 
     if (dit_code == dah_code && !straight_mode) {

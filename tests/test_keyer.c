@@ -1480,6 +1480,225 @@ static int run_control_pipe_test(void)
 
 /* ---------------- main() startup paths ---------------- */
 
+/*
+ * Run main() with both output streams and stdin redirected, and hand back
+ * everything it printed.  Argument handling is user interface, so it is worth
+ * asserting on the words, not just the exit status.
+ */
+static char *run_main_capture(int argc, char **argv, int *rc)
+{
+    char path[] = "/tmp/cwkeyer-cli-XXXXXX";
+    char *text = NULL;
+    size_t len = 0;
+    int fd = mkstemp(path);
+    int status = 0;
+    pid_t pid;
+
+    if (fd < 0)
+        return NULL;
+    close(fd);
+
+    /*
+     * main() may exit(1) on a bad argument, which would take this process
+     * with it, so it runs in a child; the child leaves its output in a file.
+     */
+    pid = fork();
+    if (pid == 0) {
+        int out = open(path, O_WRONLY | O_TRUNC);
+        int devnull = open("/dev/null", O_RDONLY);
+
+        if (out >= 0) {
+            (void)dup2(out, STDOUT_FILENO);
+            (void)dup2(out, STDERR_FILENO);
+            close(out);
+        }
+        if (devnull >= 0) {
+            (void)dup2(devnull, STDIN_FILENO);
+            close(devnull);
+        }
+        int child_rc = cwkeyer_program_main(argc, argv);
+
+        /* --help writes to stdout, which is block-buffered when redirected;
+         * _exit() would throw it away. */
+        fflush(NULL);
+        _exit(child_rc);
+    }
+
+    if (pid < 0) {
+        unlink(path);
+        return NULL;
+    }
+
+    if (waitpid(pid, &status, 0) < 0)
+        *rc = -1;
+    else
+        *rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+
+    fd = open(path, O_RDONLY);
+    if (fd >= 0) {
+        char chunk[512];
+        ssize_t got;
+
+        while ((got = read(fd, chunk, sizeof(chunk))) > 0) {
+            char *bigger = realloc(text, len + (size_t)got + 1);
+
+            if (!bigger)
+                break;
+            text = bigger;
+            memcpy(text + len, chunk, (size_t)got);
+            len += (size_t)got;
+        }
+        if (text)
+            text[len] = '\0';
+        close(fd);
+    }
+
+    unlink(path);
+    return text;
+}
+static int cli_expect(const char *prog, int argc, char **argv, int want_rc,
+                      const char *must, const char *must_not)
+{
+    int rc = 0;
+    char *out = run_main_capture(argc, argv, &rc);
+    int failures = 0;
+
+    if (rc != want_rc) {
+        fprintf(stderr, "cli: '%s' returned %d, wanted %d\n", prog, rc, want_rc);
+        failures++;
+    }
+    if (must && (!out || strstr(out, must) == NULL)) {
+        fprintf(stderr, "cli: '%s' output lacks '%s'\n", prog, must);
+        failures++;
+    }
+    if (must_not && out && strstr(out, must_not) != NULL) {
+        fprintf(stderr, "cli: '%s' output contains '%s'\n", prog, must_not);
+        failures++;
+    }
+
+    free(out);
+    return failures;
+}
+
+static void reset_cli_state(void)
+{
+    wpm = 12.0;
+    freq_hz = 800.0;
+    do_grab = 1;
+    do_decode = 0;
+    straight_mode = 0;
+    mix_mic_mode = 0;
+    dit_code = CWKEY_LEFTCTRL;
+    dah_code = CWKEY_RIGHTCTRL;
+}
+
+/* Run main() in this process, with everything redirected, for the paths that
+ * return instead of exiting; that is the only way to see what they set. */
+static int run_main_quiet(int argc, char **argv)
+{
+    int saved_out = dup(STDOUT_FILENO);
+    int saved_err = dup(STDERR_FILENO);
+    int saved_in = dup(STDIN_FILENO);
+    int devnull = open("/dev/null", O_WRONLY);
+    int devnull_in = open("/dev/null", O_RDONLY);
+    int rc;
+
+    if (devnull >= 0) {
+        (void)dup2(devnull, STDOUT_FILENO);
+        (void)dup2(devnull, STDERR_FILENO);
+    }
+    if (devnull_in >= 0)
+        (void)dup2(devnull_in, STDIN_FILENO);
+
+    rc = cwkeyer_program_main(argc, argv);
+
+    fflush(stdout);
+    fflush(stderr);
+    (void)dup2(saved_out, STDOUT_FILENO);
+    (void)dup2(saved_err, STDERR_FILENO);
+    (void)dup2(saved_in, STDIN_FILENO);
+    if (devnull >= 0)
+        close(devnull);
+    if (devnull_in >= 0)
+        close(devnull_in);
+    close(saved_out);
+    close(saved_err);
+    close(saved_in);
+    return rc;
+}
+
+static int run_cli_tests(void)
+{
+    int failures = 0;
+    char p0[] = "cwkeyer";
+    char help[] = "--help";
+    char bad[] = "--bogus";
+    char setup[] = "--setup";
+    char mixmic[] = "mix-mic";
+    char d25[] = "25";
+    char f700[] = "700";
+    char kcomma[] = "COMMA";
+    char kdot[] = "DOT";
+    char dev[] = "dev";
+    char d12[] = "12";
+    char f800[] = "800";
+    char extra[] = "extra";
+    char *help_argv[] = {p0, help, NULL};
+    char *bad_opt[] = {p0, bad, NULL};
+    char *setup_only[] = {p0, setup, NULL};
+    char *setup_kw[] = {p0, setup, mixmic, NULL};
+    char *setup_pos[] = {p0, setup, d25, f700, kcomma, kdot, NULL};
+    char *too_many[] = {p0, dev, d12, f800, kcomma, kdot, extra, NULL};
+
+    /* --setup alone still works, and needs a terminal like it always did. */
+    reset_cli_state();
+    failures += cli_expect("--setup", 2, setup_only, 1, "interactive terminal",
+                           "unexpected argument");
+
+    /* --help is an answer, not an error: it goes to stdout and exits 0. */
+    failures += cli_expect("--help", 2, help_argv, 0, "usage:", NULL);
+    failures += cli_expect("--help", 2, help_argv, 0, "mix-mic", NULL);
+
+    failures += cli_expect("--bogus", 2, bad_opt, 1, "unknown option '--bogus'",
+                           NULL);
+    failures += cli_expect("--bogus", 2, bad_opt, 1, "--help", NULL);
+    failures += cli_expect("--bogus", 2, bad_opt, 1, NULL, "Options:");
+
+    /* The command this suite was written for: the wizard plus settings. */
+    reset_cli_state();
+    failures += cli_expect("--setup mix-mic", 3, setup_kw, 1,
+                           "interactive terminal", "unexpected argument");
+    if (run_main_quiet(3, setup_kw) != 1) {
+        fprintf(stderr, "cli: --setup mix-mic did not fail without a tty\n");
+        failures++;
+    }
+    if (!mix_mic_mode) {
+        fprintf(stderr, "cli: --setup mix-mic did not set mix-mic\n");
+        failures++;
+    }
+
+    /* With --setup the positionals are speed and pitch, not a device. */
+    reset_cli_state();
+    if (run_main_quiet(6, setup_pos) != 1) {
+        fprintf(stderr, "cli: --setup with settings did not need a tty\n");
+        failures++;
+    }
+    if (!nearly(ALOAD(wpm), 25.0) || !nearly(ALOAD(freq_hz), 700.0)) {
+        fprintf(stderr, "cli: --setup did not take the speed and pitch\n");
+        failures++;
+    }
+    if (dit_code != CWKEY_COMMA || dah_code != CWKEY_DOT) {
+        fprintf(stderr, "cli: --setup did not take the key names\n");
+        failures++;
+    }
+
+    failures += cli_expect("too many arguments", 7, too_many, 1,
+                           "unexpected argument 'extra'", NULL);
+
+    reset_cli_state();
+    return failures;
+}
+
 static int run_main_tests(void)
 {
     int failures = 0;
@@ -1783,6 +2002,7 @@ int main(void)
     failures += run_control_pipe_test();
     failures += run_driver_tests();
     failures += run_main_tests();
+    failures += run_cli_tests();
 
     if (failures)
         fprintf(stderr, "%d test(s) failed\n", failures);
