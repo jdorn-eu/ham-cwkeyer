@@ -83,6 +83,14 @@ static int do_grab = 1;
 static int do_decode = 0;
 
 /*
+ * Mic mixing: play the sidetone mixed with the microphone into one output
+ * device, so a voice application can take both from a single input.  On Linux
+ * this is what cw-mic-mix.sh builds out of PulseAudio modules; on macOS the
+ * keyer does it itself.
+ */
+static int mix_mic_mode = 0;
+
+/*
  * Straight-key passthrough.  When set, the paddles key the sidetone directly
  * (either lever closes the key) instead of driving the iambic core.  This is
  * the software equivalent of the 8044ABM's separate MAN. KEY input.
@@ -325,6 +333,10 @@ static void usage(const char *prog)
         "            keys the sidetone directly, with no iambic timing\n"
         "            or memory. The RC paddle filter still applies.\n"
         "            decode is ignored in this mode.\n"
+        "  mix-mic   Mix the microphone into the sidetone, so one output\n"
+        "            carries both and a voice application can take them\n"
+        "            from a single input. macOS only; on Linux the\n"
+        "            cw-mic-mix.sh helper does the same with PulseAudio.\n"
         "  --help    Print this help and exit.\n"
         "  --version Print the version and exit.\n"
         "  --list-devices, -L\n");
@@ -2107,6 +2119,11 @@ int main(int argc, char **argv)
             continue;
         }
 
+        if (strcasecmp(argv[i], "mix-mic") == 0) {
+            mix_mic_mode = 1;
+            continue;
+        }
+
         switch (field) {
         case 0:
             wpm = parse_double_arg(argv[i], "wpm", 1.0, MAX_WPM);
@@ -2159,10 +2176,17 @@ int main(int argc, char **argv)
         fprintf(stderr,
                 "warning: decode is ignored in straight-key mode\n");
 
+    if (mix_mic_mode && !audio_backend_supports_mix()) {
+        fprintf(stderr,
+                "warning: mix-mic is not available on this platform; use "
+                "cw-mic-mix.sh instead\n");
+        mix_mic_mode = 0;
+    }
+
     fprintf(stderr, "input device: %s\n", device_path);
     fprintf(stderr,
             "CW keyer: %.2f WPM, %.2f Hz, dit code %d, dah code %d, %s, "
-            "%s, RC filter %u ms, level %d%%, weight %+.1f ms%s\n",
+            "%s, RC filter %u ms, level %d%%, weight %+.1f ms%s%s\n",
             ALOAD(wpm),
             ALOAD(freq_hz),
             dit_code,
@@ -2172,7 +2196,8 @@ int main(int argc, char **argv)
             debounce_ms,
             ALOAD(volume_percent),
             ALOAD(weight_ms),
-            (do_decode && !straight_mode) ? ", decode" : "");
+            (do_decode && !straight_mode) ? ", decode" : "",
+            mix_mic_mode ? ", mix-mic" : "");
 
     if (audio_backend_open(&actual_rate) < 0) {
         stop_signal_thread();

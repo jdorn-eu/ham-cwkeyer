@@ -253,3 +253,24 @@ Notes:
 - The script is idempotent: re-running it is safe, leftover modules from a previous (or crashed) run are unloaded first. If a module load fails or setup catches HUP, INT, or TERM, modules created by that attempt are rolled back; after SIGKILL or power loss, rerun the script or use `--unload` to remove leftovers.
 - `RATE` must be 8000–192000 Hz, `CHANNELS` 1–8, and `LOOP_LATENCY_MS` 0–1000; invalid settings are rejected before changing the audio setup.
 - Works on both PulseAudio and PipeWire; it handles common `pactl` module-list formats used by the two.
+
+### macOS: let the keyer do the mixing
+
+macOS has no equivalent of a combine sink, so the keyer mixes instead:
+
+```
+brew install blackhole-2ch
+CW_AUDIO_DEVICE="BlackHole 2ch" ./cwkeyer <device> mix-mic
+```
+
+Then choose **BlackHole 2ch** as the microphone in the voice application.
+`CW_AUDIO_DEVICE` names the device that receives the mix and
+`CW_MIX_MIC_DEVICE` names the microphone to capture (default: the system
+input). Capturing needs the Microphone permission, which macOS attributes to
+the terminal that launched the keyer.
+
+The mix goes to a single device, because there is no combine sink to fan it
+out. To hear the sidetone yourself as well, create a Multi-Output Device in
+Audio MIDI Setup containing BlackHole and your headphones and name that;
+you will then also hear your own microphone, which the Linux layout avoids by
+keeping the microphone out of the headphone path.

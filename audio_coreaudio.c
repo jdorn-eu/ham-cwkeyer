@@ -62,6 +62,78 @@ static UInt32 ca_device_buffer;
 static double ca_gap_expect[CA_MAX_GAP_NOTES];
 static double ca_gap_got[CA_MAX_GAP_NOTES];
 
+/* ---- mic mixing (--mix-mic) ----
+ *
+ * The microphone runs on its own unit, and therefore its own clock, so its
+ * samples go through a ring that the render callback drains.  Both sides are
+ * nominally 48 kHz; when the clocks disagree the ring absorbs the difference:
+ * if it overflows the oldest samples are dropped, and if it runs dry the last
+ * microphone sample is held so the sum cannot click.
+ */
+#define MIX_RING_FRAMES 48000u          /* one second */
+#define MIX_SLICE_FRAMES 4096u          /* scratch for one callback */
+
+static int16_t mix_ring[MIX_RING_FRAMES];
+static _Atomic uint64_t mix_written;    /* monotonic; index by modulo */
+static _Atomic uint64_t mix_read;
+static int16_t mix_capture[MIX_SLICE_FRAMES];   /* mic callback only */
+static int16_t mix_mix[MIX_SLICE_FRAMES];       /* render callback only */
+static AudioUnit mic_unit;
+static int16_t mix_last_mic;
+static unsigned int mix_dropped;                /* ring overruns, in frames */
+static unsigned int mix_held;                   /* dry-ring holds, in frames */
+
+static void mix_put(const int16_t *src, size_t n)
+{
+    uint64_t w = atomic_load_explicit(&mix_written, memory_order_relaxed);
+    uint64_t r;
+
+    for (size_t i = 0; i < n; i++)
+        mix_ring[(size_t)((w + i) % MIX_RING_FRAMES)] = src[i];
+    atomic_store_explicit(&mix_written, w + n, memory_order_release);
+
+    /* The reader fell more than a ring behind: drop the oldest. */
+    r = atomic_load_explicit(&mix_read, memory_order_relaxed);
+    if (w + n - r > MIX_RING_FRAMES) {
+        mix_dropped += (unsigned int)(w + n - r - MIX_RING_FRAMES);
+        atomic_store_explicit(&mix_read, w + n - MIX_RING_FRAMES,
+                              memory_order_relaxed);
+    }
+}
+
+/* Copy up to n samples out; returns how many were available. */
+static size_t mix_take(int16_t *dst, size_t n)
+{
+    uint64_t r = atomic_load_explicit(&mix_read, memory_order_relaxed);
+    uint64_t w = atomic_load_explicit(&mix_written, memory_order_acquire);
+    size_t got = 0;
+
+    while (got < n && r < w) {
+        dst[got++] = mix_ring[(size_t)(r % MIX_RING_FRAMES)];
+        r++;
+    }
+    atomic_store_explicit(&mix_read, r, memory_order_release);
+
+    return got;
+}
+
+/*
+ * Add the microphone to the rendered sidetone, clipping instead of wrapping.
+ * Kept separate from the callback so it can be tested without a device.
+ */
+static void mix_block(int16_t *tone, const int16_t *mic, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        int sum = (int)tone[i] + (int)mic[i];
+
+        if (sum > 32767)
+            sum = 32767;
+        else if (sum < -32768)
+            sum = -32768;
+        tone[i] = (int16_t)sum;
+    }
+}
+
 static double host_seconds(uint64_t ticks)
 {
     static mach_timebase_info_data_t tb;
@@ -126,6 +198,48 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
     generate_audio((int16_t *)io->mBuffers[0].mData, (size_t)frames,
                    &ca_state, ca_rate);
 
+    if (mix_mic_mode) {
+        int16_t *out = (int16_t *)io->mBuffers[0].mData;
+        size_t n = frames < MIX_SLICE_FRAMES ? frames : MIX_SLICE_FRAMES;
+        size_t got = mix_take(mix_mix, n);
+
+        /* Hold the last captured sample across a dry ring, so the sum
+         * cannot click.  The hold has to follow this block's samples, not
+         * the previous block's. */
+        if (got > 0)
+            mix_last_mic = mix_mix[got - 1];
+        for (size_t i = got; i < n; i++)
+            mix_mix[i] = mix_last_mic;
+        mix_held += (unsigned int)(n - got);
+
+        mix_block(out, mix_mix, n);
+    }
+
+    return noErr;
+}
+
+static OSStatus mic_render(void *refcon, AudioUnitRenderActionFlags *flags,
+                           const AudioTimeStamp *ts, UInt32 bus,
+                           UInt32 nframes, AudioBufferList *io)
+{
+    AudioBufferList buf;
+
+    (void)refcon;
+    (void)bus;
+    (void)io;
+
+    if (nframes > MIX_SLICE_FRAMES)
+        return noErr;
+
+    /* The unit does not own a buffer for us: we supply one and pull. */
+    buf.mNumberBuffers = 1;
+    buf.mBuffers[0].mNumberChannels = 1;
+    buf.mBuffers[0].mDataByteSize = nframes * 2;
+    buf.mBuffers[0].mData = mix_capture;
+
+    if (AudioUnitRender(mic_unit, flags, ts, 1, nframes, &buf) == noErr)
+        mix_put(mix_capture, nframes);
+
     return noErr;
 }
 
@@ -163,11 +277,10 @@ static int ca_device_uid(AudioDeviceID id, char *out, size_t size)
     return 0;
 }
 
-static int ca_has_output(AudioDeviceID id)
+static int ca_has_streams(AudioDeviceID id, AudioObjectPropertyScope scope)
 {
     AudioObjectPropertyAddress a = {
-        kAudioDevicePropertyStreams, kAudioDevicePropertyScopeOutput,
-        kAudioObjectPropertyElementMain };
+        kAudioDevicePropertyStreams, scope, kAudioObjectPropertyElementMain };
     UInt32 sz = 0;
 
     if (AudioObjectGetPropertyDataSize(id, &a, 0, NULL, &sz) != noErr)
@@ -175,12 +288,22 @@ static int ca_has_output(AudioDeviceID id)
     return sz > 0;
 }
 
-static AudioDeviceID ca_default_output(void)
+static int ca_has_output(AudioDeviceID id)
+{
+    return ca_has_streams(id, kAudioDevicePropertyScopeOutput);
+}
+
+static int ca_has_input(AudioDeviceID id)
+{
+    return ca_has_streams(id, kAudioDevicePropertyScopeInput);
+}
+
+static AudioDeviceID ca_default_device(AudioObjectPropertySelector selector)
 {
     AudioDeviceID def = 0;
     UInt32 sz = sizeof(def);
     AudioObjectPropertyAddress a = {
-        kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal,
+        selector, kAudioObjectPropertyScopeGlobal,
         kAudioObjectPropertyElementMain };
 
     if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, 0, NULL, &sz,
@@ -189,7 +312,17 @@ static AudioDeviceID ca_default_output(void)
     return def;
 }
 
-static AudioDeviceID ca_find_device(const char *want)
+static AudioDeviceID ca_default_output(void)
+{
+    return ca_default_device(kAudioHardwarePropertyDefaultOutputDevice);
+}
+
+static AudioDeviceID ca_default_input(void)
+{
+    return ca_default_device(kAudioHardwarePropertyDefaultInputDevice);
+}
+
+static AudioDeviceID ca_find_device(const char *want, int for_output)
 {
     AudioObjectPropertyAddress a = {
         kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal,
@@ -200,7 +333,7 @@ static AudioDeviceID ca_find_device(const char *want)
     AudioDeviceID found = 0;
 
     if (!want || !*want || strcmp(want, "default") == 0)
-        return ca_default_output();
+        return for_output ? ca_default_output() : ca_default_input();
 
     if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &a, 0, NULL,
                                       &sz) != noErr || sz == 0)
@@ -219,7 +352,7 @@ static AudioDeviceID ca_find_device(const char *want)
     for (UInt32 i = 0; i < n && !found; i++) {
         char name[256], uid[256];
 
-        if (!ca_has_output(ids[i]))
+        if (!(for_output ? ca_has_output(ids[i]) : ca_has_input(ids[i])))
             continue;
         ca_device_name(ids[i], name, sizeof(name));
         ca_device_uid(ids[i], uid, sizeof(uid));
@@ -255,14 +388,138 @@ static void ca_list_devices(void)
         for (UInt32 i = 0; i < n; i++) {
             char name[256], uid[256];
 
-            if (!ca_has_output(ids[i]))
-                continue;
             ca_device_name(ids[i], name, sizeof(name));
             ca_device_uid(ids[i], uid, sizeof(uid));
-            fprintf(stderr, "  %s  [%s]\n", name, uid);
+            fprintf(stderr, "  %s%s%s  %s  [%s]\n",
+                    ca_has_output(ids[i]) ? "out" : "   ",
+                    ca_has_input(ids[i]) ? " in" : "   ",
+                    ca_has_output(ids[i]) || ca_has_input(ids[i]) ? "" : " --",
+                    name, uid);
         }
     }
     free(ids);
+}
+
+/*
+ * Open the microphone.  This is the other half of --mix-mic: the same audio
+ * ends up in one output device, so a voice application can take both the
+ * operator and the sidetone from a single input.
+ */
+static int ca_open_mic(AudioDeviceID output_dev)
+{
+    const char *want = getenv("CW_MIX_MIC_DEVICE");
+    AudioComponentDescription desc = {
+        .componentType = kAudioUnitType_Output,
+        .componentSubType = kAudioUnitSubType_HALOutput,
+        .componentManufacturer = kAudioUnitManufacturer_Apple,
+    };
+    AudioComponent comp;
+    AudioDeviceID dev;
+    char name[256], uid[256];
+    UInt32 one = 1, zero = 0;
+    AudioStreamBasicDescription fmt;
+    AURenderCallbackStruct cb = {
+        .inputProc = mic_render, .inputProcRefCon = NULL };
+    OSStatus err;
+
+    dev = ca_find_device(want, 0);
+    if (!dev) {
+        fprintf(stderr, "mix-mic: no audio input device matching '%s'\n",
+                want && *want ? want : "default");
+        fprintf(stderr, "available audio devices:\n");
+        ca_list_devices();
+        return -1;
+    }
+    if (!ca_has_input(dev)) {
+        fprintf(stderr, "mix-mic: '%s' has no input streams\n",
+                want && *want ? want : "default");
+        return -1;
+    }
+
+    ca_device_name(dev, name, sizeof(name));
+    ca_device_uid(dev, uid, sizeof(uid));
+
+    if (dev == output_dev)
+        fprintf(stderr,
+                "warning: mix-mic: the microphone and the output are the same "
+                "device; this will feed back\n");
+
+    comp = AudioComponentFindNext(NULL, &desc);
+    if (!comp) {
+        fprintf(stderr, "mix-mic: cannot find the CoreAudio HAL output unit\n");
+        return -1;
+    }
+
+    err = AudioComponentInstanceNew(comp, &mic_unit);
+    if (err != noErr) {
+        fprintf(stderr, "mix-mic: AudioComponentInstanceNew: %d\n", (int)err);
+        mic_unit = NULL;
+        return -1;
+    }
+
+    (void)AudioUnitSetProperty(mic_unit, kAudioOutputUnitProperty_EnableIO,
+                               kAudioUnitScope_Input, 1, &one, sizeof(one));
+    (void)AudioUnitSetProperty(mic_unit, kAudioOutputUnitProperty_EnableIO,
+                               kAudioUnitScope_Output, 0, &zero, sizeof(zero));
+
+    err = AudioUnitSetProperty(mic_unit, kAudioOutputUnitProperty_CurrentDevice,
+                               kAudioUnitScope_Global, 0, &dev, sizeof(dev));
+    if (err != noErr) {
+        fprintf(stderr, "mix-mic: cannot select input device '%s': %d\n",
+                name, (int)err);
+        goto fail;
+    }
+
+    memset(&fmt, 0, sizeof(fmt));
+    fmt.mSampleRate = (Float64)AUDIO_RATE;
+    fmt.mFormatID = kAudioFormatLinearPCM;
+    fmt.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+    fmt.mBytesPerPacket = 2;
+    fmt.mFramesPerPacket = 1;
+    fmt.mBytesPerFrame = 2;
+    fmt.mChannelsPerFrame = 1;
+    fmt.mBitsPerChannel = 16;
+
+    /* Audio flows device -> application on input element 1, so our side of
+     * that element is its output scope. */
+    err = AudioUnitSetProperty(mic_unit, kAudioUnitProperty_StreamFormat,
+                               kAudioUnitScope_Output, 1, &fmt, sizeof(fmt));
+    if (err != noErr) {
+        fprintf(stderr, "mix-mic: cannot set the capture format: %d\n",
+                (int)err);
+        goto fail;
+    }
+
+    err = AudioUnitSetProperty(mic_unit,
+                               kAudioOutputUnitProperty_SetInputCallback,
+                               kAudioUnitScope_Global, 0, &cb, sizeof(cb));
+    if (err != noErr) {
+        fprintf(stderr, "mix-mic: cannot set the capture callback: %d\n",
+                (int)err);
+        goto fail;
+    }
+
+    err = AudioUnitInitialize(mic_unit);
+    if (err != noErr) {
+        fprintf(stderr, "mix-mic: AudioUnitInitialize: %d\n", (int)err);
+        goto fail;
+    }
+
+    fprintf(stderr, "mix-mic: capturing %s (%s) into the sidetone output\n",
+            name, uid);
+    return 0;
+
+fail:
+    /* Every jump here happens before the unit was initialised, so disposing
+     * is the whole cleanup. */
+    AudioComponentInstanceDispose(mic_unit);
+    mic_unit = NULL;
+    return -1;
+}
+
+int audio_backend_supports_mix(void)
+{
+    return 1;
 }
 
 /* ---- the backend API ---- */
@@ -302,7 +559,7 @@ int audio_backend_open(unsigned int *actual_rate)
         }
         desc.componentSubType = kAudioUnitSubType_DefaultOutput;
     } else {
-        dev = ca_find_device(want);
+        dev = ca_find_device(want, 1);
         if (!dev) {
             fprintf(stderr, "no audio output device matching '%s'\n", want);
             fprintf(stderr, "available output devices:\n");
@@ -419,6 +676,11 @@ int audio_backend_open(unsigned int *actual_rate)
             ca_device_buffer = bf;
     }
 
+    if (mix_mic_mode && ca_open_mic(dev) < 0) {
+        fprintf(stderr, "mix-mic: continuing without the microphone\n");
+        mix_mic_mode = 0;
+    }
+
     fprintf(stderr,
             "CoreAudio device: %s (%s)%s, rate: %u Hz, mono 16-bit, "
             "device buffer %u frames (%.1f ms)\n",
@@ -439,8 +701,18 @@ fail:
 
 int audio_backend_run(void)
 {
-    OSStatus err = AudioOutputUnitStart(ca_unit);
+    OSStatus err;
 
+    if (mix_mic_mode && mic_unit) {
+        err = AudioOutputUnitStart(mic_unit);
+        if (err != noErr) {
+            fprintf(stderr, "mix-mic: cannot start the microphone: %d; "
+                    "continuing without it\n", (int)err);
+            mix_mic_mode = 0;
+        }
+    }
+
+    err = AudioOutputUnitStart(ca_unit);
     if (err != noErr) {
         fprintf(stderr, "AudioOutputUnitStart: %d\n", (int)err);
         return -1;
@@ -453,6 +725,12 @@ int audio_backend_run(void)
     }
 
     AudioOutputUnitStop(ca_unit);
+    if (mic_unit)
+        AudioOutputUnitStop(mic_unit);
+
+    if (mix_dropped || mix_held)
+        fprintf(stderr, "mix-mic: %u captured frame(s) dropped, %u held\n",
+                mix_dropped, mix_held);
 
     /* Hand the backend's own diagnostics to the core's exit summary. */
     audio_underruns += ca_gaps;
@@ -475,6 +753,12 @@ int audio_backend_run(void)
 
 void audio_backend_close(void)
 {
+    if (mic_unit) {
+        AudioUnitUninitialize(mic_unit);
+        AudioComponentInstanceDispose(mic_unit);
+        mic_unit = NULL;
+    }
+
     if (!ca_unit)
         return;
 
@@ -485,6 +769,7 @@ void audio_backend_close(void)
 
 void audio_backend_usage(FILE *out)
 {
-    fputs("  CW_AUDIO_DEVICE=default   Output device name or UID (default)\n",
+    fputs("  CW_AUDIO_DEVICE=default   Output device name or UID (default)\n"
+          "  CW_MIX_MIC_DEVICE=default Input device name or UID for mix-mic\n",
           out);
 }

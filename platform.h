@@ -47,12 +47,17 @@ typedef struct input_device_t input_device_t;
 /*
  * Audio output.
  *
+ * audio_backend_supports_mix() says whether the backend can mix the
+ * microphone into the sidetone itself (mix_mic_mode); where it cannot, the
+ * PulseAudio helper script does the job on the system side.
+ *
  * audio_backend_open() negotiates a playback stream and reports the sample
  * rate the device actually uses; the core renders every mark at that rate.
  * audio_backend_run() then blocks, pushing or pulling generated audio, until
  * keep_running() turns false.  audio_backend_close() releases the stream and
  * is safe after a failed open and safe to call twice.
  */
+int  audio_backend_supports_mix(void);
 int  audio_backend_open(unsigned int *actual_rate);
 int  audio_backend_run(void);
 void audio_backend_close(void);

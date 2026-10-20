@@ -206,8 +206,112 @@ static void test_odd_buffer_lists(void)
            "a null buffer returned an error");
 }
 
+/* ---- mic mixing ---- */
+
+static void reset_mix(void)
+{
+    atomic_store(&mix_written, 0);
+    atomic_store(&mix_read, 0);
+    memset(mix_ring, 0, sizeof(mix_ring));
+    mix_last_mic = 0;
+    mix_dropped = 0;
+    mix_held = 0;
+}
+
+static void test_mix_block(void)
+{
+    int16_t tone[4] = {10000, -10000, 32000, -32000};
+    int16_t mic[4] = {10000, -10000, 32000, -32000};
+    int16_t quiet[3] = {0, 0, 0};
+    int16_t sig[3] = {5, -5, 32767};
+
+    mix_block(tone, mic, 4);
+    expect(tone[0] == 20000, "the mixer did not sum");
+    expect(tone[1] == -20000, "the mixer did not sum a negative pair");
+    expect(tone[2] == 32767, "positive clipping is wrong");
+    expect(tone[3] == -32768, "negative clipping is wrong");
+
+    /* A silent sidetone passes the microphone through untouched. */
+    mix_block(quiet, sig, 3);
+    expect(quiet[0] == 5 && quiet[1] == -5 && quiet[2] == 32767,
+           "the mixer altered a signal it should have passed through");
+
+    mix_block(quiet, sig, 0); /* no-op must not fault */
+}
+
+static void test_mix_ring(void)
+{
+    int16_t in[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    int16_t out[8];
+
+    reset_mix();
+    mix_put(in, 8);
+    expect(mix_take(out, 8) == 8, "the ring did not return what went in");
+    for (int i = 0; i < 8; i++)
+        expect(out[i] == in[i], "ring order was not preserved");
+
+    reset_mix();
+    expect(mix_take(out, 4) == 0, "a dry ring returned samples");
+
+    /* Filling past capacity keeps the newest and drops the oldest. */
+    reset_mix();
+    for (size_t i = 0; i < MIX_RING_FRAMES + 10; i++) {
+        int16_t v = (int16_t)(i % 1000);
+
+        mix_put(&v, 1);
+    }
+    expect(mix_dropped == 10, "the ring did not drop the oldest samples");
+    expect(mix_take(out, 1) == 1, "the ring was empty after an overrun");
+    expect(out[0] == 10, "the ring kept the wrong end after an overrun");
+}
+
+/* The whole path: captured samples in, sidetone plus microphone out. */
+static void test_mix_in_render(void)
+{
+    int16_t buf[480];
+    AudioBufferList list;
+    AudioTimeStamp ts;
+    int16_t mic = 1000;
+
+    reset_audio();
+    reset_mix();
+    volume_percent = 70;
+    wpm = 12.0;
+    freq_hz = 800.0;
+
+    /* 100 samples are waiting for a 480-frame block; the last one is
+     * distinguishable so the held tail can be told from the real samples. */
+    for (int i = 0; i < 100; i++) {
+        int16_t v = (i == 99) ? 777 : mic;
+
+        mix_put(&v, 1);
+    }
+
+    mix_mic_mode = 1;
+    make_list(&list, buf, 480);
+    make_time(&ts, 0);
+    expect(ca_render(NULL, NULL, &ts, 0, 480, &list) == noErr,
+           "render returned an error with mic mixing on");
+
+    /* No mark queued, so the sidetone is silence and the mic shows through. */
+    expect(buf[0] == 1000, "the microphone did not reach the output");
+    expect(buf[98] == 1000, "the microphone did not reach the end of its data");
+    expect(buf[99] == 777, "the last captured sample was not used");
+
+    /* Past the captured samples the last one is held, so the sum cannot
+     * click; the drop to zero would be a step discontinuity. */
+    expect(buf[100] == 777 && buf[479] == 777,
+           "a dry mic ring did not hold its last sample");
+    expect(mix_held == 380, "the held-sample count is wrong");
+
+    mix_mic_mode = 0;
+}
+
 int main(void)
 {
+    test_mix_block();
+    test_mix_ring();
+    test_mix_in_render();
     test_silence_and_level();
     test_mark_ends();
     test_dropout_detection();

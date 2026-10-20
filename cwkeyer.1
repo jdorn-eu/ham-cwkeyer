@@ -14,6 +14,7 @@ cwkeyer \- low-latency iambic CW sidetone keyer
 .RI [ nograb ]
 .RI [ decode ]
 .RI [ straight ]
+.RI [ mix\-mic ]
 .br
 .B cwkeyer
 .B \-\-help
@@ -124,6 +125,17 @@ separate
 input. The
 .B decode
 option is ignored in this mode.
+.TP
+.B mix\-mic
+Mix the microphone into the sidetone, so that one output device carries both
+and a voice application can take the operator and the sidetone from a single
+input. macOS only; use the
+.B CW_AUDIO_DEVICE
+and
+.B CW_MIX_MIC_DEVICE
+variables to say where the mix goes and which microphone to capture. On Linux
+.BR cw-mic-mix (1)
+does the same with PulseAudio instead.
 .SH OPTIONS
 .TP
 .BR \-\-help ", " \-h
@@ -212,6 +224,13 @@ and this is unset or empty, it defaults to
 .BR cw_out ,
 the combined sink created by
 .BR cw-mic-mix (1).
+.TP
+.B CW_MIX_MIC_DEVICE
+macOS only, with
+.BR mix\-mic .
+Input device by name or UID to capture (default: the system input).
+Capturing needs the Microphone permission, which macOS attributes to the
+program that launched the keyer.
 .TP
 .B CW_AUDIO_DEVICE
 macOS only. Output device by name or UID, which pins it. The default

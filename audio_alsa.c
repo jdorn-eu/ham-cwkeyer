@@ -265,6 +265,11 @@ void audio_backend_close(void)
     }
 }
 
+int audio_backend_supports_mix(void)
+{
+    return 0;
+}
+
 void audio_backend_usage(FILE *out)
 {
     fputs("  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
