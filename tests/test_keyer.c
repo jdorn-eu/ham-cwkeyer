@@ -403,6 +403,8 @@ static int run_debounce_tests(void)
 
 /* ---------------- evdev event parsing ---------------- */
 
+#if defined(__linux__)
+
 static struct input_event make_event(unsigned short type, unsigned short code,
                                      int value)
 {
@@ -421,13 +423,13 @@ static int run_evdev_tests(void)
     int resync;
     struct input_event e;
 
-    dit_code = KEY_LEFTCTRL;
-    dah_code = KEY_RIGHTCTRL;
+    dit_code = CWKEY_LEFTCTRL;
+    dah_code = CWKEY_RIGHTCTRL;
 
     /* A press sets the paddle and its edge latch. */
     clear_input_state();
     resync = 0;
-    e = make_event(EV_KEY, KEY_LEFTCTRL, 1);
+    e = make_event(EV_KEY, CWKEY_LEFTCTRL, 1);
     evdev_handle_event(&e, &resync);
     if (ALOAD(dit_paddle) != 1 || ALOAD(dit_edge) != 1 || resync) {
         fprintf(stderr, "evdev: dit press not registered\n");
@@ -435,7 +437,7 @@ static int run_evdev_tests(void)
     }
 
     /* A release clears the paddle. */
-    e = make_event(EV_KEY, KEY_LEFTCTRL, 0);
+    e = make_event(EV_KEY, CWKEY_LEFTCTRL, 0);
     evdev_handle_event(&e, &resync);
     if (ALOAD(dit_paddle) != 0) {
         fprintf(stderr, "evdev: dit release not registered\n");
@@ -444,7 +446,7 @@ static int run_evdev_tests(void)
 
     /* Autorepeat (value 2) is ignored. */
     clear_input_state();
-    e = make_event(EV_KEY, KEY_RIGHTCTRL, 2);
+    e = make_event(EV_KEY, CWKEY_RIGHTCTRL, 2);
     evdev_handle_event(&e, &resync);
     if (ALOAD(dah_paddle) || ALOAD(dah_edge)) {
         fprintf(stderr, "evdev: autorepeat treated as a press\n");
@@ -469,7 +471,7 @@ static int run_evdev_tests(void)
         fprintf(stderr, "evdev: SYN_DROPPED did not clear and resync\n");
         failures++;
     }
-    e = make_event(EV_KEY, KEY_LEFTCTRL, 1);
+    e = make_event(EV_KEY, CWKEY_LEFTCTRL, 1);
     if (evdev_handle_event(&e, &resync) || ALOAD(dit_paddle)) {
         fprintf(stderr, "evdev: event applied during resync\n");
         failures++;
@@ -484,6 +486,8 @@ static int run_evdev_tests(void)
     return failures;
 }
 
+#endif /* __linux__ */
+
 /* ---------------- press ordering ---------------- */
 
 /*
@@ -497,8 +501,8 @@ static int run_press_order_tests(void)
     int64_t saved_debounce = debounce_ns;
     keyer_t k;
 
-    dit_code = KEY_LEFTCTRL;
-    dah_code = KEY_RIGHTCTRL;
+    dit_code = CWKEY_LEFTCTRL;
+    dah_code = CWKEY_RIGHTCTRL;
     debounce_ns = 0;   /* raw levels: what we set is what the core samples */
 
     /* Dit pressed first: the lower stamp, and it keys first. */
@@ -793,7 +797,9 @@ static int run_arg_tests(void)
 {
     int failures = 0;
     int saved;
+#if defined(__linux__)
     unsigned long bits[NBITS(KEY_MAX + 1)];
+#endif
 
     /* Valid doubles. */
     if (!nearly(parse_double_arg("25", "wpm", 1.0, MAX_WPM), 25.0))
@@ -837,11 +843,11 @@ static int run_arg_tests(void)
         failures++;
 
     /* lookup_key: names, case, numeric, and unknown. */
-    if (lookup_key("COMMA") != KEY_COMMA)
+    if (lookup_key("COMMA") != CWKEY_COMMA)
         failures++;
-    if (lookup_key("KEY_LEFTCTRL") != KEY_LEFTCTRL)
+    if (lookup_key("KEY_LEFTCTRL") != CWKEY_LEFTCTRL)
         failures++;
-    if (lookup_key("leftctrl") != KEY_LEFTCTRL)
+    if (lookup_key("leftctrl") != CWKEY_LEFTCTRL)
         failures++;
     if (lookup_key("42") != 42)
         failures++;
@@ -850,13 +856,15 @@ static int run_arg_tests(void)
     g_bad_arg = "NOT_A_KEY";
     failures += !child_exits_with(1, call_lookup);
 
+#if defined(__linux__)
     /* bit_is_set. */
     memset(bits, 0, sizeof(bits));
-    bits[KEY_LEFTCTRL / BITS_PER_ULONG] |= 1UL << (KEY_LEFTCTRL % BITS_PER_ULONG);
-    if (!bit_is_set(KEY_LEFTCTRL, bits))
+    bits[CWKEY_LEFTCTRL / BITS_PER_ULONG] |= 1UL << (CWKEY_LEFTCTRL % BITS_PER_ULONG);
+    if (!bit_is_set(CWKEY_LEFTCTRL, bits))
         failures++;
-    if (bit_is_set(KEY_RIGHTCTRL, bits))
+    if (bit_is_set(CWKEY_RIGHTCTRL, bits))
         failures++;
+#endif
 
     /* ns_to_frames rounding. */
     if (ns_to_frames(1000000000LL, 48000) != 48000)
@@ -869,17 +877,21 @@ static int run_arg_tests(void)
 
 /* ---------------- input-device listing ---------------- */
 
+#if defined(__linux__)
+
 static void set_test_key(unsigned long *bits, unsigned int code)
 {
     bits[code / BITS_PER_ULONG] |= 1UL << (code % BITS_PER_ULONG);
 }
 
-static void set_test_device(input_device_t *dev, const char *id,
+#endif /* __linux__ */
+
+static void set_test_device(input_device_t *dev, const char *id, int order,
                             device_kind_t kind)
 {
     memset(dev, 0, sizeof(*dev));
     snprintf(dev->id, sizeof(dev->id), "%s", id);
-    dev->order = (int)device_event_number(id);
+    dev->order = order;
     dev->kind = kind;
     dev->readable = 1;
 }
@@ -887,7 +899,9 @@ static void set_test_device(input_device_t *dev, const char *id,
 static int run_device_list_tests(void)
 {
     int failures = 0;
+#if defined(__linux__)
     unsigned long keys[NBITS(KEY_MAX + 1)];
+#endif
     input_device_t a;
     input_device_t b;
     input_device_t p;
@@ -896,14 +910,15 @@ static int run_device_list_tests(void)
     size_t len = 0;
     FILE *out;
 
+#if defined(__linux__)
     /* A full keyboard stays a keyboard even though it also reports the
      * default paddle keys. */
     memset(keys, 0, sizeof(keys));
     set_test_key(keys, KEY_A);
     set_test_key(keys, KEY_SPACE);
     set_test_key(keys, KEY_ENTER);
-    set_test_key(keys, KEY_LEFTCTRL);
-    set_test_key(keys, KEY_RIGHTCTRL);
+    set_test_key(keys, CWKEY_LEFTCTRL);
+    set_test_key(keys, CWKEY_RIGHTCTRL);
     if (classify_input_device("Logitech USB Keyboard", 0, 0, keys) !=
         DEVICE_KIND_KEYBOARD)
         failures++;
@@ -925,8 +940,8 @@ static int run_device_list_tests(void)
         failures++;
 
     const known_paddle_t *kp = known_paddle_by_id(0x04d8, 0x01a6);
-    if (!kp || kp->dit_code != KEY_LEFTCTRL ||
-        kp->dah_code != KEY_RIGHTCTRL)
+    if (!kp || kp->dit_code != CWKEY_LEFTCTRL ||
+        kp->dah_code != CWKEY_RIGHTCTRL)
         failures++;
 
     /* Exactly one readable known adapter is auto-selected; zero or two
@@ -951,8 +966,8 @@ static int run_device_list_tests(void)
 
     /* A dedicated adapter reports the paddle keys but not a typing set. */
     memset(keys, 0, sizeof(keys));
-    set_test_key(keys, KEY_LEFTCTRL);
-    set_test_key(keys, KEY_RIGHTCTRL);
+    set_test_key(keys, CWKEY_LEFTCTRL);
+    set_test_key(keys, CWKEY_RIGHTCTRL);
     if (classify_input_device("HRS VBand Keyer", 0, 0, keys) !=
         DEVICE_KIND_PADDLE)
         failures++;
@@ -967,10 +982,10 @@ static int run_device_list_tests(void)
     if (classify_input_device("WB9KZY Paddle", 0, 0, keys) != DEVICE_KIND_PADDLE)
         failures++;
 
-    /* A stray KEY_DOT (common on media/AVRCP devices) must not look like a
+    /* A stray CWKEY_DOT (common on media/AVRCP devices) must not look like a
      * paddle on its own. */
     memset(keys, 0, sizeof(keys));
-    set_test_key(keys, KEY_DOT);
+    set_test_key(keys, CWKEY_DOT);
     set_test_key(keys, KEY_PLAYPAUSE);
     if (classify_input_device("AirPods Pro (AVRCP)", 0, 0, keys) !=
         DEVICE_KIND_UNKNOWN)
@@ -984,25 +999,26 @@ static int run_device_list_tests(void)
     if (device_has_default_paddles(keys))
         failures++;
 
-    if (strcmp(device_kind_name(DEVICE_KIND_KEYBOARD), "keyboard") != 0 ||
-        strcmp(device_kind_name(DEVICE_KIND_PADDLE), "paddle") != 0 ||
-        strcmp(device_kind_name(DEVICE_KIND_UNKNOWN), "unknown") != 0)
-        failures++;
-
     /* Natural event-number order, not the lexicographic glob order. */
     if (device_event_number("/dev/input/event2") != 2 ||
         device_event_number("/dev/input/event20") != 20 ||
         device_event_number("/dev/input/event3x") != -1)
+        failures++;
+#endif /* __linux__ */
+
+    if (strcmp(device_kind_name(DEVICE_KIND_KEYBOARD), "keyboard") != 0 ||
+        strcmp(device_kind_name(DEVICE_KIND_PADDLE), "paddle") != 0 ||
+        strcmp(device_kind_name(DEVICE_KIND_UNKNOWN), "unknown") != 0)
         failures++;
 
     memset(&a, 0, sizeof(a));
     memset(&b, 0, sizeof(b));
     memset(&p, 0, sizeof(p));
     memset(&u, 0, sizeof(u));
-    set_test_device(&a, "/dev/input/event20", DEVICE_KIND_KEYBOARD);
-    set_test_device(&b, "/dev/input/event2", DEVICE_KIND_KEYBOARD);
-    set_test_device(&p, "/dev/input/event1", DEVICE_KIND_PADDLE);
-    set_test_device(&u, "/dev/input/event1", DEVICE_KIND_UNKNOWN);
+    set_test_device(&a, "/dev/input/event20", 20, DEVICE_KIND_KEYBOARD);
+    set_test_device(&b, "/dev/input/event2", 2, DEVICE_KIND_KEYBOARD);
+    set_test_device(&p, "/dev/input/event1", 1, DEVICE_KIND_PADDLE);
+    set_test_device(&u, "/dev/input/event1", 1, DEVICE_KIND_UNKNOWN);
 
     if (compare_input_devices(&b, &a) >= 0)      /* event2 < event20 */
         failures++;
@@ -1049,6 +1065,8 @@ static int run_device_list_tests(void)
 }
 
 /* ---------------- paddle tap detection ---------------- */
+
+#if defined(__linux__)
 
 static int run_tap_tests(void)
 {
@@ -1099,13 +1117,13 @@ static int run_tap_tests(void)
     e = make_event(EV_REL, REL_X, 1);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
-    e = make_event(EV_KEY, KEY_COMMA, 1);
+    e = make_event(EV_KEY, CWKEY_COMMA, 1);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
     which = 99;
     code = 0;
     if (input_backend_wait_press(devices, 2, SIZE_MAX, 100, &which, &code) != 1 ||
-        which != 1 || code != KEY_COMMA)
+        which != 1 || code != CWKEY_COMMA)
         failures++;
 
     /* Pointer/gamepad buttons are EV_KEY too, but must not count as taps. */
@@ -1118,20 +1136,20 @@ static int run_tap_tests(void)
         failures++;
 
     /* A press on the second device reports its index and key code. */
-    e = make_event(EV_KEY, KEY_COMMA, 1);
+    e = make_event(EV_KEY, CWKEY_COMMA, 1);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
     which = 99;
     code = 0;
     if (input_backend_wait_press(devices, 2, SIZE_MAX, 100, &which, &code) != 1 ||
-        which != 1 || code != KEY_COMMA)
+        which != 1 || code != CWKEY_COMMA)
         failures++;
 
     /* Releases and autorepeat are not presses. */
-    e = make_event(EV_KEY, KEY_COMMA, 0);
+    e = make_event(EV_KEY, CWKEY_COMMA, 0);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
-    e = make_event(EV_KEY, KEY_COMMA, 2);
+    e = make_event(EV_KEY, CWKEY_COMMA, 2);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
     which = 99;
@@ -1140,17 +1158,17 @@ static int run_tap_tests(void)
         failures++;
 
     /* Filtering to one device works. */
-    e = make_event(EV_KEY, KEY_DOT, 1);
+    e = make_event(EV_KEY, CWKEY_DOT, 1);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
     which = 99;
     code = 0;
     if (input_backend_wait_press(devices, 2, 1, 100, &which, &code) != 1 ||
-        which != 1 || code != KEY_DOT)
+        which != 1 || code != CWKEY_DOT)
         failures++;
 
     /* A press on the other device is ignored while filtering. */
-    e = make_event(EV_KEY, KEY_LEFTCTRL, 1);
+    e = make_event(EV_KEY, CWKEY_LEFTCTRL, 1);
     if (write(fds[0][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
     which = 99;
@@ -1167,26 +1185,26 @@ static int run_tap_tests(void)
 
     /* Release detection ignores presses, autorepeat, and other keys. */
     input_backend_drain(devices, 2);
-    e = make_event(EV_KEY, KEY_COMMA, 1);
+    e = make_event(EV_KEY, CWKEY_COMMA, 1);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
-    e = make_event(EV_KEY, KEY_COMMA, 2);
+    e = make_event(EV_KEY, CWKEY_COMMA, 2);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
-    e = make_event(EV_KEY, KEY_DOT, 0);
+    e = make_event(EV_KEY, CWKEY_DOT, 0);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
-    if (input_backend_wait_release(&devices[1], KEY_COMMA, 10) != 0)
+    if (input_backend_wait_release(&devices[1], CWKEY_COMMA, 10) != 0)
         failures++;
 
-    e = make_event(EV_KEY, KEY_COMMA, 0);
+    e = make_event(EV_KEY, CWKEY_COMMA, 0);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
-    if (input_backend_wait_release(&devices[1], KEY_COMMA, 100) != 1)
+    if (input_backend_wait_release(&devices[1], CWKEY_COMMA, 100) != 1)
         failures++;
 
     /* No release pending: timeout. */
-    if (input_backend_wait_release(&devices[1], KEY_COMMA, 10) != 0)
+    if (input_backend_wait_release(&devices[1], CWKEY_COMMA, 10) != 0)
         failures++;
 
     /* Invalid filter index and no pollable devices are errors. */
@@ -1196,7 +1214,7 @@ static int run_tap_tests(void)
     devices[1].readable = 0;
     if (input_backend_wait_press(devices, 2, SIZE_MAX, 10, &which, &code) != -1)
         failures++;
-    if (input_backend_wait_release(&devices[1], KEY_COMMA, 10) != -1)
+    if (input_backend_wait_release(&devices[1], CWKEY_COMMA, 10) != -1)
         failures++;
 
     close(fds[0][0]);
@@ -1206,6 +1224,8 @@ static int run_tap_tests(void)
 
     return failures;
 }
+
+#endif /* __linux__ */
 
 /* ---------------- setup prompts ---------------- */
 
@@ -1257,7 +1277,7 @@ static int run_prompt_tests(void)
     size_t len = 0;
     FILE *out;
 
-    set_test_device(&dev, "/dev/input/event21", DEVICE_KIND_PADDLE);
+    set_test_device(&dev, "/dev/input/event21", 21, DEVICE_KIND_PADDLE);
     snprintf(dev.name, sizeof(dev.name), "%s", "HRS VBand Keyer");
     out = open_memstream(&buf, &len);
     if (!out) {
@@ -1747,12 +1767,16 @@ int main(void)
     failures += run_iambic_tests();
     failures += run_alphabet_tests();
     failures += run_debounce_tests();
+#if defined(__linux__)
     failures += run_evdev_tests();
+#endif
     failures += run_press_order_tests();
     failures += run_decode_tests();
     failures += run_arg_tests();
     failures += run_device_list_tests();
+#if defined(__linux__)
     failures += run_tap_tests();
+#endif
     failures += run_prompt_tests();
     failures += run_control_tests();
     failures += run_control_status_tests();

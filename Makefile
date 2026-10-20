@@ -57,7 +57,10 @@ endif
 CPPFLAGS += -DCWKEYER_VERSION='"$(VERSION)"'
 LDLIBS    = -lasound -lpthread -lm
 
-CTESTS = test_keyer test_signals test_audio test_evdev
+# test_keyer and test_signals are portable; the rest are per platform.
+CTESTS_COMMON = test_keyer test_signals
+CTESTS_LINUX  = test_audio test_evdev
+CTESTS_DARWIN = test_coreaudio test_hid
 
 .PHONY: test test-differential analyze coverage test-libcw install uninstall dist clean
 
@@ -71,8 +74,12 @@ ifeq ($(UNAME_S),Darwin)
 PLATFORM_SRCS = $(DARWIN_SRCS)
 LDLIBS    = -framework AudioToolbox -framework CoreAudio -framework IOKit \
             -framework CoreFoundation -lm
+CTESTS     = $(CTESTS_COMMON) $(CTESTS_DARWIN)
+SCRIPT_TEST =
 else
 PLATFORM_SRCS = $(LINUX_SRCS)
+CTESTS     = $(CTESTS_COMMON) $(CTESTS_LINUX)
+SCRIPT_TEST = bash tests/test_mic_mix.sh
 endif
 
 cwkeyer: cwkeyer.c $(PLATFORM_SRCS)
@@ -84,7 +91,7 @@ test:
 	    $(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -o "$$tmp/$$t" tests/$$t.c $(LDLIBS) || exit 1; \
 	    "$$tmp/$$t" || exit 1; \
 	done; \
-	bash tests/test_mic_mix.sh
+	$(SCRIPT_TEST)
 
 # Differential test against eight third-party iambic keyer variants (seven
 # upstream projects; transcribed in the test, so no external dependency).

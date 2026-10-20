@@ -5,6 +5,11 @@ int cwkeyer_program_main(int argc, char **argv);
 #include "../cwkeyer.c"
 #undef main
 
+/* Linux's termios has no PENDIN, and needs no such exception. */
+#ifndef PENDIN
+#define PENDIN 0
+#endif
+
 #include <sys/wait.h>
 
 static int fail(const char *msg)
@@ -88,7 +93,13 @@ int main(void)
         return fail("tcgetattr restored");
     if (!(after.c_lflag & ECHO))
         return fail("ECHO not restored");
-    if (after.c_lflag != before.c_lflag)
+    /*
+     * macOS sets PENDIN whenever termios changes, and clears it at the next
+     * read; it is the kernel's own transient, not part of what we saved, so
+     * it cannot be restored away. Everything else must match exactly.
+     */
+    if ((after.c_lflag & ~(tcflag_t)PENDIN) !=
+        (before.c_lflag & ~(tcflag_t)PENDIN))
         return fail("c_lflag differs from original after restore");
 
     int pty_flags = fcntl(sfd, F_GETFL);
@@ -115,7 +126,8 @@ int main(void)
     restore_terminal();
     if (tcgetattr(STDIN_FILENO, &after) != 0)
         return fail("tcgetattr cycle2");
-    if (after.c_lflag != before.c_lflag)
+    if ((after.c_lflag & ~(tcflag_t)PENDIN) !=
+        (before.c_lflag & ~(tcflag_t)PENDIN))
         return fail("second disable/restore cycle changed c_lflag");
 
     dup2(saved_stdin, STDIN_FILENO);

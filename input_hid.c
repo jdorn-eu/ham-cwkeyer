@@ -379,30 +379,23 @@ static int hid_slot(void *sender)
     return -1;
 }
 
-static void hid_input_cb(void *context, IOReturn result, void *sender,
-                         IOHIDValueRef value)
+/*
+ * The decision logic, deliberately free of IOKit objects so a test can drive
+ * it: everything a value can change is decided here, and hid_input_cb() is
+ * only the translation from an IOHIDValueRef.
+ */
+static void hid_dispatch(void *sender, unsigned int usage_page,
+                         unsigned int usage, long value)
 {
-    IOHIDElementRef el;
-    CFIndex v;
-    uint32_t usage;
     int slot;
 
-    (void)context;
-
-    if (result != kIOReturnSuccess)
+    if (usage_page != (unsigned int)kHIDPage_KeyboardOrKeypad)
         return;
-
-    el = IOHIDValueGetElement(value);
-    if (!el || IOHIDElementGetUsagePage(el) != (uint32_t)kHIDPage_KeyboardOrKeypad)
-        return;
-
-    usage = IOHIDElementGetUsage(el);
-    v = IOHIDValueGetIntegerValue(value);
 
     /* HID reports 1 for press and 0 for release; there is no autorepeat. */
     if (hid.mode == HID_MODE_RUN) {
-        if (v == 0 || v == 1)
-            set_key_state((int)usage, (int)v);
+        if (value == 0 || value == 1)
+            set_key_state((int)usage, (int)value);
         return;
     }
 
@@ -418,7 +411,7 @@ static void hid_input_cb(void *context, IOReturn result, void *sender,
         return;
 
     if (hid.mode == HID_MODE_WAIT_PRESS) {
-        if (v == 1) {
+        if (value == 1) {
             hid.fired = 1;
             hid.which = hid.index[slot];
             hid.code = (int)usage;
@@ -426,11 +419,29 @@ static void hid_input_cb(void *context, IOReturn result, void *sender,
         return;
     }
 
-    if (v == 0 && (int)usage == hid.want_code) {
+    if (value == 0 && (int)usage == hid.want_code) {
         hid.fired = 1;
         hid.which = hid.index[slot];
         hid.code = (int)usage;
     }
+}
+
+static void hid_input_cb(void *context, IOReturn result, void *sender,
+                         IOHIDValueRef value)
+{
+    IOHIDElementRef el;
+
+    (void)context;
+
+    if (result != kIOReturnSuccess)
+        return;
+
+    el = IOHIDValueGetElement(value);
+    if (!el)
+        return;
+
+    hid_dispatch(sender, IOHIDElementGetUsagePage(el), IOHIDElementGetUsage(el),
+                 (long)IOHIDValueGetIntegerValue(value));
 }
 
 static void hid_close_all(void)
