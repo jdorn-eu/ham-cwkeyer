@@ -57,10 +57,11 @@ and your own key names.
 .PP
 Reading keyboard input needs the Input Monitoring permission, which macOS
 attributes to the terminal that launched the keyer. Taking exclusive control
-stands in for evdev's grab and needs root; without it the levers also reach
-the foreground application, which
-.B cwkeyer
-reports as a warning. The
+stands in for evdev's grab and is refused for keyboards unless the process is
+root, so the setup wizard offers
+.B nograb
+by default and the keyer warns and falls back if a seize fails. Without it the
+levers also reach the foreground application. The
 .B CW_ALSA_DEVICE
 and
 .B PULSE_SINK
@@ -168,13 +169,15 @@ and a paddle defaults to exclusive grab. If both taps use the same key,
 offers straight-key mode. Requires an interactive terminal on standard
 input.
 .SH ENVIRONMENT
+The side tone settings apply everywhere; the audio output variables are per
+platform.
 .TP
 .B CW_ALSA_DEVICE
-ALSA PCM to open (default
+Linux only. ALSA PCM to open (default
 .BR pulse ).
 .TP
 .B CW_ALSA_LATENCY_US
-Requested ALSA latency in microseconds (default 20000). ALSA may negotiate
+Linux only. Requested ALSA latency in microseconds (default 20000). ALSA may negotiate
 a different buffer and period; the achieved values are printed at startup.
 .TP
 .B CW_KEYER_LEVEL
@@ -201,7 +204,7 @@ and
 .BR . .
 .TP
 .B PULSE_SINK
-PulseAudio/PipeWire sink for the sidetone. If
+Linux only. PulseAudio/PipeWire sink for the sidetone. If
 .B CW_ALSA_DEVICE
 is
 .B pulse
@@ -209,6 +212,11 @@ and this is unset or empty, it defaults to
 .BR cw_out ,
 the combined sink created by
 .BR cw-mic-mix (1).
+.TP
+.B CW_AUDIO_DEVICE
+macOS only. Output device by name or UID (default
+.BR default ,
+which follows the system output at startup).
 .TP
 .B NO_COLOR
 If set, do not color the output of
@@ -284,6 +292,9 @@ Remap the paddles, do not grab the device, and decode to text.
 .B cwkeyer /dev/input/eventX straight
 Use the paddles as a straight key instead of an iambic keyer.
 .SH FILES
+The files below are Linux; on macOS the paddle is a HID device with no node
+(see
+.BR MACOS ).
 .TP
 .I /dev/input/eventX
 Paddle input device.

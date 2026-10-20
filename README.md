@@ -126,10 +126,11 @@ Three things differ from Linux, all of them forced by the platform:
   launched the keyer (your terminal). If `--setup` never sees a tap, grant it
   under System Settings → Privacy & Security → Input Monitoring.
 - **Exclusive access needs root.** `kIOHIDOptionsTypeSeizeDevice` stands in
-  for `EVIOCGRAB`. Without it the levers also reach the foreground
-  application. The keyer tries to seize but falls back to listening
-  non-exclusively with a warning, which is harmless for a dedicated adapter
-  and noisy on a normal keyboard, where `nograb` is the better choice.
+  for `EVIOCGRAB`, and is refused for keyboards unless the process is root,
+  so `--setup` defaults to `nograb` unless you are root and the keyer falls
+  back with a warning if a seize fails. Without it the levers also reach the
+  foreground application, which is harmless for a dedicated adapter and noisy
+  on a normal keyboard.
 - **Latency is the device buffer.** CoreAudio asks for one device buffer per
   render callback (512 frames, 10.7 ms on the built-in speakers) and the
   measured output latency is about 12 ms. `CW_AUDIO_DEVICE` picks the output
@@ -140,8 +141,10 @@ A dropout is reported the way an ALSA underrun is, but without an error code:
 CoreAudio's own sample timeline jumps when audio is lost, and that jump is
 counted and shown in the exit summary.
 
-`make test` and `make analyze` are Linux-only for now: the suites drive evdev
-fixtures and ALSA's `null` device, and `-fanalyzer` is a GCC option.
+`make test` runs the portable suites plus the Darwin ones on macOS and the
+Linux ones elsewhere; `make install` installs `cw-mic-mix` only on Linux,
+because it drives `pactl`. `make analyze` uses `-fanalyzer` with GCC and
+clang's own analyzer otherwise. `make coverage` is Linux-only.
 
 ## Install
 

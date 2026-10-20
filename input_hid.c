@@ -728,7 +728,16 @@ void input_backend_resume(void)
 
 const char *input_backend_grab_description(void)
 {
-    return do_grab ? "exclusive access requested" : "nograb";
+    return do_grab ? "grab requested" : "nograb";
+}
+
+/*
+ * Seizing a keyboard is refused unless the process is root, so asking for it
+ * by default would only produce a warning on every run.
+ */
+int input_backend_grab_possible(void)
+{
+    return geteuid() == 0;
 }
 
 const char *input_backend_devices_noun(void)

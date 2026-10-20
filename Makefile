@@ -76,10 +76,14 @@ LDLIBS    = -framework AudioToolbox -framework CoreAudio -framework IOKit \
             -framework CoreFoundation -lm
 CTESTS     = $(CTESTS_COMMON) $(CTESTS_DARWIN)
 SCRIPT_TEST =
+# cw-mic-mix drives pactl, so it only exists on Linux.
+INSTALL_MIC_MIX =
 else
 PLATFORM_SRCS = $(LINUX_SRCS)
 CTESTS     = $(CTESTS_COMMON) $(CTESTS_LINUX)
 SCRIPT_TEST = bash tests/test_mic_mix.sh
+INSTALL_MIC_MIX = install -m 0755 cw-mic-mix.sh "$(DESTDIR)$(BINDIR)/cw-mic-mix" && \
+	    install -m 0644 cw-mic-mix.1 "$(DESTDIR)$(MANDIR)/cw-mic-mix.1"
 endif
 
 cwkeyer: cwkeyer.c $(PLATFORM_SRCS)
@@ -105,9 +109,15 @@ test-differential:
 	    tests/test_differential_thirdparty.c $(LDLIBS) || exit 1; \
 	"$$tmp/test_differential_thirdparty" $(ARGS) || exit 1
 
-# GCC's static analyzer; slower than a normal build, so kept separate.
+# Static analysis; slower than a normal build, so kept separate.  GCC and
+# clang both have one, with different spellings.
 analyze:
+ifeq ($(IS_CLANG),1)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) --analyze \
+	    -Xanalyzer -analyzer-output=text cwkeyer.c
+else
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fanalyzer -c cwkeyer.c -o /dev/null
+endif
 
 # Differential test against UnixCW's iambic keyer. Needs a built unixcw
 # checkout (./configure && make); override LIBCW_DIR if it lives elsewhere.
@@ -141,9 +151,8 @@ coverage:
 install: cwkeyer
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(MANDIR)"
 	install -m 0755 cwkeyer "$(DESTDIR)$(BINDIR)/cwkeyer"
-	install -m 0755 cw-mic-mix.sh "$(DESTDIR)$(BINDIR)/cw-mic-mix"
 	install -m 0644 cwkeyer.1 "$(DESTDIR)$(MANDIR)/cwkeyer.1"
-	install -m 0644 cw-mic-mix.1 "$(DESTDIR)$(MANDIR)/cw-mic-mix.1"
+	$(INSTALL_MIC_MIX)
 
 uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/cwkeyer" \

@@ -82,7 +82,13 @@ void input_backend_resume(void)
 
 const char *input_backend_grab_description(void)
 {
-    return do_grab ? "EVIOCGRAB enabled" : "nograb";
+    /* Whether the grab actually took is reported by acquire_evdev_grab(). */
+    return do_grab ? "grab requested" : "nograb";
+}
+
+int input_backend_grab_possible(void)
+{
+    return 1;
 }
 
 const char *input_backend_devices_noun(void)

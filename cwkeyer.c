@@ -1309,7 +1309,8 @@ int input_backend_setup(char *device_path, size_t path_size)
         fprintf(stderr, " (%s)", known);
     fputc('\n', stderr);
 
-    int default_grab = devices[selected].kind == DEVICE_KIND_PADDLE;
+    int default_grab = devices[selected].kind == DEVICE_KIND_PADDLE &&
+                       input_backend_grab_possible();
     int grab = prompt_yes_no("Take exclusive control of this device?",
                              default_grab);
     if (grab < 0)

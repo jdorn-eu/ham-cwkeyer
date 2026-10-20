@@ -68,7 +68,10 @@ void audio_backend_close(void);
  * suspend() and resume() drop and re-take whatever exclusive access the
  * backend may hold, so SIGTSTP/SIGCONT leave the shell usable.
  * grab_description() supplies the startup-banner text for the current grab
- * setting.
+ * setting, which describes what will be attempted: whether it then works is
+ * reported when the device opens. grab_possible() says whether exclusive
+ * access can work at all for this user, which is what the setup wizard uses
+ * to pick the default answer.
  *
  * The rest is the primitive set that the shared --list-devices listing and
  * --setup wizard are built on, so neither has to exist twice:
@@ -89,6 +92,7 @@ void *input_backend_thread(void *arg);
 void  input_backend_suspend(void);
 void  input_backend_resume(void);
 const char *input_backend_grab_description(void);
+int  input_backend_grab_possible(void);
 const char *input_backend_devices_noun(void);
 const char *input_backend_unreadable_hint(void);
 

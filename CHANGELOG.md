@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Makefile detects clang by asking the compiler rather than by looking at
   `$(CC)`, because `cc` is clang on macOS, and picks the Darwin frameworks.
 - CI builds and tests macOS as well as Linux.
+- The startup banner says "grab requested" rather than claiming the grab
+  succeeded, since the attempt happens when the device opens; a backend that
+  cannot seize as this user now says so through the new
+  `input_backend_grab_possible()`, which makes `--setup` default to `nograb`
+  on macOS unless it is running as root.
+- `make analyze` uses clang's analyzer when the compiler is clang; `make
+  install` installs `cw-mic-mix` and its man page only on Linux, since it
+  drives `pactl`; the man page marks the `CW_ALSA_*` and `PULSE_SINK`
+  variables as Linux-only and documents `CW_AUDIO_DEVICE`.
 - Split the single source file into a portable core (`cwkeyer.c`) and a pair
   of Linux backends (`input_evdev.c`, `audio_alsa.c`), joined at the end of
   `cwkeyer.c` and described by `platform.h`. The core no longer includes
