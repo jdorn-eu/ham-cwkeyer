@@ -144,7 +144,11 @@ input. macOS only; use the
 .B CW_AUDIO_DEVICE
 and
 .B CW_MIX_MIC_DEVICE
-variables to say where the mix goes and which microphone to capture. On Linux
+variables to say where the mix goes and which microphone to capture, and
+.B CW_MIX_MONITOR
+to hear the sidetone locally. The microphone is ducked by the sidetone rather
+than the sum being clipped, so the tone stays clean and the mix cannot
+overload. On Linux
 .BR cw-mic-mix (1)
 does the same with PulseAudio instead.
 .SH OPTIONS
@@ -235,6 +239,13 @@ and this is unset or empty, it defaults to
 .BR cw_out ,
 the combined sink created by
 .BR cw-mic-mix (1).
+.TP
+.B CW_MIX_MONITOR
+macOS only. Output device on which to play the sidetone alone, so the operator
+can hear what they are sending while the mixed stream goes to a voice
+application. Independent of
+.BR mix\-mic .
+Runs about one device buffer behind the output.
 .TP
 .B CW_MIX_MIC_DEVICE
 macOS only, with

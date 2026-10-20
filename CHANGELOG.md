@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `CW_MIX_MONITOR` on macOS: play the sidetone alone on another device while
+  the mixed stream goes to a voice application, which is what makes `mix-mic`
+  usable - without somewhere to hear it, sending everything to BlackHole means
+  sending blind. It works without `mix-mic` as well, for the simpler case of
+  routing the tone to a virtual device and monitoring locally. The sidetone
+  crosses a ring like the microphone does, so the two units can run on their
+  own clocks.
+
 ### Changed
 
 - The macOS device argument may stop at a field boundary: the last field is the

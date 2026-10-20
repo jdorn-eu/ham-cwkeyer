@@ -261,33 +261,69 @@ static void test_odd_buffer_lists(void)
 
 /* ---- mic mixing ---- */
 
+static void reset_ring(ring_t *ring)
+{
+    atomic_store(&ring->written, 0);
+    atomic_store(&ring->read, 0);
+    memset(ring->buf, 0, sizeof(ring->buf));
+    ring->dropped = 0;
+    ring->held = 0;
+}
+
 static void reset_mix(void)
 {
-    atomic_store(&mix_written, 0);
-    atomic_store(&mix_read, 0);
-    memset(mix_ring, 0, sizeof(mix_ring));
+    reset_ring(&mic_ring);
+    reset_ring(&monitor_ring);
     mix_last_mic = 0;
-    mix_dropped = 0;
-    mix_held = 0;
+    monitor_last = 0;
 }
 
 static void test_mix_block(void)
 {
-    int16_t tone[4] = {10000, -10000, 32000, -32000};
-    int16_t mic[4] = {10000, -10000, 32000, -32000};
     int16_t quiet[3] = {0, 0, 0};
     int16_t sig[3] = {5, -5, 32767};
-
-    mix_block(tone, mic, 4);
-    expect(tone[0] == 20000, "the mixer did not sum");
-    expect(tone[1] == -20000, "the mixer did not sum a negative pair");
-    expect(tone[2] == 32767, "positive clipping is wrong");
-    expect(tone[3] == -32768, "negative clipping is wrong");
+    int16_t full[2] = {32767, -32767};
+    int16_t loud[2] = {32767, -32768};
+    int16_t half[1] = {16384};
+    int16_t voice[1] = {20000};
 
     /* A silent sidetone passes the microphone through untouched. */
     mix_block(quiet, sig, 3);
     expect(quiet[0] == 5 && quiet[1] == -5 && quiet[2] == 32767,
            "the mixer altered a signal it should have passed through");
+
+    /* A full-scale sidetone leaves no headroom, so the microphone is ducked
+     * away entirely and the tone is preserved exactly. */
+    mix_block(full, loud, 2);
+    expect(full[0] == 32767, "the tone was altered at full scale");
+    expect(full[1] == -32767, "the tone was altered at negative full scale");
+
+    /* Half scale leaves about half the headroom:
+     * 16384 + 20000 * (32767 - 16384) / 32767 = 16384 + 9999. */
+    mix_block(half, voice, 1);
+    expect(half[0] == 26383, "the microphone was not ducked by the tone level");
+
+    /*
+     * The point of ducking: no pair of inputs can wrap.  A sum that left the
+     * range would come back on the wrong side of zero.
+     */
+    {
+        int wrapped = 0;
+
+        for (int t = -32768; t <= 32767; t += 61) {
+            for (int m = -32768; m <= 32767; m += 397) {
+                int16_t tt = (int16_t)t;
+                int16_t mm = (int16_t)m;
+
+                mix_block(&tt, &mm, 1);
+                if (m > 0 && tt < t)
+                    wrapped++;
+                if (m < 0 && tt > t)
+                    wrapped++;
+            }
+        }
+        expect(wrapped == 0, "the mixer wrapped instead of ducking");
+    }
 
     mix_block(quiet, sig, 0); /* no-op must not fault */
 }
@@ -298,23 +334,44 @@ static void test_mix_ring(void)
     int16_t out[8];
 
     reset_mix();
-    mix_put(in, 8);
-    expect(mix_take(out, 8) == 8, "the ring did not return what went in");
+    ring_put(&mic_ring, in, 8);
+    expect(ring_take(&mic_ring, out, 8) == 8,
+           "the ring did not return what went in");
     for (int i = 0; i < 8; i++)
         expect(out[i] == in[i], "ring order was not preserved");
 
     reset_mix();
-    expect(mix_take(out, 4) == 0, "a dry ring returned samples");
+    expect(ring_take(&mic_ring, out, 4) == 0, "a dry ring returned samples");
+
+    /* A dry ring holds its last sample rather than stepping to zero. */
+    {
+        int16_t last = 321;
+        int16_t block[4];
+
+        reset_mix();
+        ring_fill(&mic_ring, block, 4, &last);
+        expect(block[0] == 321 && block[3] == 321,
+               "an empty ring did not hold the last sample");
+        expect(mic_ring.held == 4,
+               "an empty ring did not report what it filled in");
+
+        ring_put(&mic_ring, in, 2);
+        ring_fill(&mic_ring, block, 4, &last);
+        expect(block[0] == 1 && block[1] == 2, "the ring lost its data");
+        expect(block[2] == 2 && block[3] == 2,
+               "a partly dry ring did not hold the last sample");
+    }
 
     /* Filling past capacity keeps the newest and drops the oldest. */
     reset_mix();
-    for (size_t i = 0; i < MIX_RING_FRAMES + 10; i++) {
+    for (size_t i = 0; i < RING_FRAMES + 10; i++) {
         int16_t v = (int16_t)(i % 1000);
 
-        mix_put(&v, 1);
+        ring_put(&mic_ring, &v, 1);
     }
-    expect(mix_dropped == 10, "the ring did not drop the oldest samples");
-    expect(mix_take(out, 1) == 1, "the ring was empty after an overrun");
+    expect(mic_ring.dropped == 10, "the ring did not drop the oldest samples");
+    expect(ring_take(&mic_ring, out, 1) == 1,
+           "the ring was empty after an overrun");
     expect(out[0] == 10, "the ring kept the wrong end after an overrun");
 }
 
@@ -337,7 +394,7 @@ static void test_mix_in_render(void)
     for (int i = 0; i < 100; i++) {
         int16_t v = (i == 99) ? 777 : mic;
 
-        mix_put(&v, 1);
+        ring_put(&mic_ring, &v, 1);
     }
 
     mix_mic_mode = 1;
@@ -355,7 +412,7 @@ static void test_mix_in_render(void)
      * click; the drop to zero would be a step discontinuity. */
     expect(buf[100] == 777 && buf[479] == 777,
            "a dry mic ring did not hold its last sample");
-    expect(mix_held == 380, "the held-sample count is wrong");
+    expect(mic_ring.held == 380, "the held-sample count is wrong");
 
     mix_mic_mode = 0;
 }

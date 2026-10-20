@@ -63,78 +63,6 @@ static UInt32 ca_device_buffer;
 static double ca_gap_expect[CA_MAX_GAP_NOTES];
 static double ca_gap_got[CA_MAX_GAP_NOTES];
 
-/* ---- mic mixing (--mix-mic) ----
- *
- * The microphone runs on its own unit, and therefore its own clock, so its
- * samples go through a ring that the render callback drains.  Both sides are
- * nominally 48 kHz; when the clocks disagree the ring absorbs the difference:
- * if it overflows the oldest samples are dropped, and if it runs dry the last
- * microphone sample is held so the sum cannot click.
- */
-#define MIX_RING_FRAMES 48000u          /* one second */
-#define MIX_SLICE_FRAMES 4096u          /* scratch for one callback */
-
-static int16_t mix_ring[MIX_RING_FRAMES];
-static _Atomic uint64_t mix_written;    /* monotonic; index by modulo */
-static _Atomic uint64_t mix_read;
-static int16_t mix_capture[MIX_SLICE_FRAMES];   /* mic callback only */
-static int16_t mix_mix[MIX_SLICE_FRAMES];       /* render callback only */
-static AudioUnit mic_unit;
-static int16_t mix_last_mic;
-static unsigned int mix_dropped;                /* ring overruns, in frames */
-static unsigned int mix_held;                   /* dry-ring holds, in frames */
-
-static void mix_put(const int16_t *src, size_t n)
-{
-    uint64_t w = atomic_load_explicit(&mix_written, memory_order_relaxed);
-    uint64_t r;
-
-    for (size_t i = 0; i < n; i++)
-        mix_ring[(size_t)((w + i) % MIX_RING_FRAMES)] = src[i];
-    atomic_store_explicit(&mix_written, w + n, memory_order_release);
-
-    /* The reader fell more than a ring behind: drop the oldest. */
-    r = atomic_load_explicit(&mix_read, memory_order_relaxed);
-    if (w + n - r > MIX_RING_FRAMES) {
-        mix_dropped += (unsigned int)(w + n - r - MIX_RING_FRAMES);
-        atomic_store_explicit(&mix_read, w + n - MIX_RING_FRAMES,
-                              memory_order_relaxed);
-    }
-}
-
-/* Copy up to n samples out; returns how many were available. */
-static size_t mix_take(int16_t *dst, size_t n)
-{
-    uint64_t r = atomic_load_explicit(&mix_read, memory_order_relaxed);
-    uint64_t w = atomic_load_explicit(&mix_written, memory_order_acquire);
-    size_t got = 0;
-
-    while (got < n && r < w) {
-        dst[got++] = mix_ring[(size_t)(r % MIX_RING_FRAMES)];
-        r++;
-    }
-    atomic_store_explicit(&mix_read, r, memory_order_release);
-
-    return got;
-}
-
-/*
- * Add the microphone to the rendered sidetone, clipping instead of wrapping.
- * Kept separate from the callback so it can be tested without a device.
- */
-static void mix_block(int16_t *tone, const int16_t *mic, size_t n)
-{
-    for (size_t i = 0; i < n; i++) {
-        int sum = (int)tone[i] + (int)mic[i];
-
-        if (sum > 32767)
-            sum = 32767;
-        else if (sum < -32768)
-            sum = -32768;
-        tone[i] = (int16_t)sum;
-    }
-}
-
 static double host_seconds(uint64_t ticks)
 {
     static mach_timebase_info_data_t tb;
@@ -146,6 +74,170 @@ static double host_seconds(uint64_t ticks)
     }
 
     return (double)ticks * (double)tb.numer / (double)tb.denom / 1e9;
+}
+
+/* ---- mic mixing (--mix-mic) and monitoring ----
+ *
+ * Two audio units can run alongside the sidetone unit, and each runs on its
+ * own clock:
+ *
+ *   - the microphone feeds the mix, so a voice application can take the
+ *     operator and the sidetone from one input;
+ *   - an optional monitor output plays the sidetone alone, so the operator
+ *     can hear what they are sending while the mixed stream goes elsewhere.
+ *
+ * Both cross a ring.  The rates are nominally the same 48 kHz; when the clocks
+ * disagree the ring absorbs it: if it overflows the oldest samples are
+ * dropped, and if it runs dry the last sample is held, so neither a gap nor a
+ * step appears in the audio.
+ */
+#define RING_FRAMES 48000u              /* one second */
+#define MIX_SLICE_FRAMES 4096u          /* scratch for one callback */
+
+typedef struct {
+    int16_t buf[RING_FRAMES];
+    _Atomic uint64_t written;           /* monotonic; index by modulo */
+    _Atomic uint64_t read;
+    unsigned int dropped;               /* frames lost to overruns */
+    unsigned int held;                  /* frames filled in on a dry ring */
+} ring_t;
+
+static ring_t mic_ring;
+static ring_t monitor_ring;
+static int16_t mix_capture[MIX_SLICE_FRAMES];   /* mic callback only */
+static int16_t mix_mix[MIX_SLICE_FRAMES];       /* sidetone callback only */
+static int16_t monitor_buf[MIX_SLICE_FRAMES];   /* monitor callback only */
+static AudioUnit mic_unit;
+static AudioUnit monitor_unit;
+static int16_t mix_last_mic;
+static int16_t monitor_last;
+
+static void ring_put(ring_t *ring, const int16_t *src, size_t n)
+{
+    uint64_t w = atomic_load_explicit(&ring->written, memory_order_relaxed);
+    uint64_t r;
+
+    for (size_t i = 0; i < n; i++)
+        ring->buf[(size_t)((w + i) % RING_FRAMES)] = src[i];
+    atomic_store_explicit(&ring->written, w + n, memory_order_release);
+
+    /* The reader fell more than a ring behind: drop the oldest. */
+    r = atomic_load_explicit(&ring->read, memory_order_relaxed);
+    if (w + n - r > RING_FRAMES) {
+        ring->dropped += (unsigned int)(w + n - r - RING_FRAMES);
+        atomic_store_explicit(&ring->read, w + n - RING_FRAMES,
+                              memory_order_relaxed);
+    }
+}
+
+/* Copy up to n samples out; returns how many were available. */
+static size_t ring_take(ring_t *ring, int16_t *dst, size_t n)
+{
+    uint64_t r = atomic_load_explicit(&ring->read, memory_order_relaxed);
+    uint64_t w = atomic_load_explicit(&ring->written, memory_order_acquire);
+    size_t got = 0;
+
+    while (got < n && r < w) {
+        dst[got++] = ring->buf[(size_t)(r % RING_FRAMES)];
+        r++;
+    }
+    atomic_store_explicit(&ring->read, r, memory_order_release);
+
+    return got;
+}
+
+/* Drain a ring into dst, holding the last sample when it runs dry. */
+static void ring_fill(ring_t *ring, int16_t *dst, size_t n, int16_t *last)
+{
+    size_t got = ring_take(ring, dst, n);
+
+    if (got > 0)
+        *last = dst[got - 1];
+    for (size_t i = got; i < n; i++)
+        dst[i] = *last;
+    ring->held += (unsigned int)(n - got);
+}
+
+/*
+ * Add the microphone to the rendered sidetone.
+ *
+ * The microphone is ducked by the sidetone's instantaneous level rather than
+ * the sum being clipped.  A clipped sine is a buzz, and the sidetone is the
+ * thing the operator is listening to; with this the tone stays exactly as
+ * generated and the sum cannot leave the sample range at all.  Between
+ * elements, where the tone is silent, the microphone is untouched.
+ *
+ * Kept separate from the callback so it can be tested without a device.
+ */
+static void mix_block(int16_t *tone, const int16_t *mic, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        int t = tone[i];
+        int m = mic[i];
+        int mag = t < 0 ? -t : t;
+
+        /* -32768 has no positive counterpart, and negating it here would make
+         * the headroom negative. */
+        if (mag > 32767)
+            mag = 32767;
+
+        /* (32767 - mag) / 32767 is the headroom the tone is not using. */
+        tone[i] = (int16_t)(t + (int)(((long)m * (32767 - mag)) / 32767));
+    }
+}
+
+static OSStatus mic_render(void *refcon, AudioUnitRenderActionFlags *flags,
+                           const AudioTimeStamp *ts, UInt32 bus,
+                           UInt32 nframes, AudioBufferList *io)
+{
+    AudioBufferList buf;
+
+    (void)refcon;
+    (void)bus;
+    (void)io;
+
+    if (nframes > MIX_SLICE_FRAMES)
+        return noErr;
+
+    /* The unit does not own a buffer for us: we supply one and pull. */
+    buf.mNumberBuffers = 1;
+    buf.mBuffers[0].mNumberChannels = 1;
+    buf.mBuffers[0].mDataByteSize = nframes * 2;
+    buf.mBuffers[0].mData = mix_capture;
+
+    if (AudioUnitRender(mic_unit, flags, ts, 1, nframes, &buf) == noErr)
+        ring_put(&mic_ring, mix_capture, nframes);
+
+    return noErr;
+}
+
+static OSStatus monitor_render(void *refcon, AudioUnitRenderActionFlags *flags,
+                               const AudioTimeStamp *ts, UInt32 bus,
+                               UInt32 nframes, AudioBufferList *io)
+{
+    int16_t *out;
+    UInt32 chans;
+    size_t n;
+
+    (void)refcon;
+    (void)flags;
+    (void)ts;
+    (void)bus;
+
+    if (!io || io->mNumberBuffers != 1 || !io->mBuffers[0].mData)
+        return noErr;
+
+    out = (int16_t *)io->mBuffers[0].mData;
+    chans = io->mBuffers[0].mNumberChannels;
+    n = nframes < MIX_SLICE_FRAMES ? nframes : MIX_SLICE_FRAMES;
+
+    ring_fill(&monitor_ring, monitor_buf, n, &monitor_last);
+
+    for (UInt32 i = 0; i < n; i++)
+        for (UInt32 c = 0; c < chans; c++)
+            out[i * chans + c] = monitor_buf[i];
+
+    return noErr;
 }
 
 static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
@@ -162,12 +254,9 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
     /*
      * The AU's own timeline is the exact record of whether audio was lost:
      * contiguous mSampleTime means the callback ran on time, a jump means the
-     * host skipped audio (a dropout) and the operator heard a gap.
-     */
-    /*
-     * Skip the first transition: a unit that has just started can re-anchor
-     * its sample timeline while it settles, which is not audio the operator
-     * could have heard.
+     * host skipped audio and the operator heard a gap.  Skip the first
+     * transition: a unit that has just started can re-anchor its timeline
+     * while it settles, which is not audio anyone could have heard.
      */
     if (ca_have_last && ca_callbacks >= 2) {
         double expect = (double)ca_last_sample_time + (double)ca_last_frames;
@@ -196,64 +285,39 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
          * time from before the stop, which measures the suspend rather than
          * the audio path.  Ignore leads that no output device could justify.
          */
-        if (lead < -0.5)
-            goto after_latency;
-        if (lead < ca_delay_min)
-            ca_delay_min = lead;
-        if (lead > ca_delay_max)
-            ca_delay_max = lead;
-        ca_delay_sum += lead;
-        ca_delay_n++;
+        if (lead >= -0.5) {
+            if (lead < ca_delay_min)
+                ca_delay_min = lead;
+            if (lead > ca_delay_max)
+                ca_delay_max = lead;
+            ca_delay_sum += lead;
+            ca_delay_n++;
+        }
     }
 
-after_latency:
     if (frames > ca_slice_frames)
         ca_slice_frames = frames;
 
     generate_audio((int16_t *)io->mBuffers[0].mData, (size_t)frames,
                    &ca_state, ca_rate);
 
-    if (mix_mic_mode) {
-        int16_t *out = (int16_t *)io->mBuffers[0].mData;
-        size_t n = frames < MIX_SLICE_FRAMES ? frames : MIX_SLICE_FRAMES;
-        size_t got = mix_take(mix_mix, n);
-
-        /* Hold the last captured sample across a dry ring, so the sum
-         * cannot click.  The hold has to follow this block's samples, not
-         * the previous block's. */
-        if (got > 0)
-            mix_last_mic = mix_mix[got - 1];
-        for (size_t i = got; i < n; i++)
-            mix_mix[i] = mix_last_mic;
-        mix_held += (unsigned int)(n - got);
-
-        mix_block(out, mix_mix, n);
-    }
-
-    return noErr;
-}
-
-static OSStatus mic_render(void *refcon, AudioUnitRenderActionFlags *flags,
-                           const AudioTimeStamp *ts, UInt32 bus,
-                           UInt32 nframes, AudioBufferList *io)
-{
-    AudioBufferList buf;
-
-    (void)refcon;
-    (void)bus;
-    (void)io;
-
-    if (nframes > MIX_SLICE_FRAMES)
+    if (!mix_mic_mode && !monitor_unit)
         return noErr;
 
-    /* The unit does not own a buffer for us: we supply one and pull. */
-    buf.mNumberBuffers = 1;
-    buf.mBuffers[0].mNumberChannels = 1;
-    buf.mBuffers[0].mDataByteSize = nframes * 2;
-    buf.mBuffers[0].mData = mix_capture;
+    {
+        int16_t *out = (int16_t *)io->mBuffers[0].mData;
+        size_t n = frames < MIX_SLICE_FRAMES ? frames : MIX_SLICE_FRAMES;
 
-    if (AudioUnitRender(mic_unit, flags, ts, 1, nframes, &buf) == noErr)
-        mix_put(mix_capture, nframes);
+        /* The monitor wants the tone as generated, before anything is mixed
+         * into it, so it gets a copy on the way past. */
+        if (monitor_unit)
+            ring_put(&monitor_ring, out, n);
+
+        if (mix_mic_mode) {
+            ring_fill(&mic_ring, mix_mix, n, &mix_last_mic);
+            mix_block(out, mix_mix, n);
+        }
+    }
 
     return noErr;
 }
@@ -532,6 +596,110 @@ fail:
     return -1;
 }
 
+/*
+ * Open the monitor output: the sidetone alone, so the operator can hear what
+ * they are sending while the mixed stream goes to a voice application.
+ */
+static int ca_open_monitor(AudioDeviceID primary)
+{
+    const char *want = getenv("CW_MIX_MONITOR");
+    AudioComponentDescription desc = {
+        .componentType = kAudioUnitType_Output,
+        .componentSubType = kAudioUnitSubType_HALOutput,
+        .componentManufacturer = kAudioUnitManufacturer_Apple,
+    };
+    AudioComponent comp;
+    AudioDeviceID dev;
+    char name[256], uid[256];
+    AudioStreamBasicDescription fmt;
+    AURenderCallbackStruct cb = {
+        .inputProc = monitor_render, .inputProcRefCon = NULL };
+    OSStatus err;
+
+    if (!want || !*want)
+        return 0;
+
+    dev = ca_find_device(want, 1);
+    if (!dev) {
+        fprintf(stderr, "monitor: no audio output device matching '%s'\n", want);
+        fprintf(stderr, "available audio devices:\n");
+        ca_list_devices();
+        return -1;
+    }
+    if (!ca_has_output(dev)) {
+        fprintf(stderr, "monitor: '%s' has no output streams\n", want);
+        return -1;
+    }
+    if (dev == primary)
+        fprintf(stderr,
+                "warning: monitor: that is the same device the sidetone "
+                "already goes to; you will hear it twice\n");
+
+    ca_device_name(dev, name, sizeof(name));
+    ca_device_uid(dev, uid, sizeof(uid));
+
+    comp = AudioComponentFindNext(NULL, &desc);
+    if (!comp) {
+        fprintf(stderr, "monitor: cannot find the CoreAudio HAL output unit\n");
+        return -1;
+    }
+
+    err = AudioComponentInstanceNew(comp, &monitor_unit);
+    if (err != noErr) {
+        fprintf(stderr, "monitor: AudioComponentInstanceNew: %d\n", (int)err);
+        monitor_unit = NULL;
+        return -1;
+    }
+
+    err = AudioUnitSetProperty(monitor_unit,
+                               kAudioOutputUnitProperty_CurrentDevice,
+                               kAudioUnitScope_Global, 0, &dev, sizeof(dev));
+    if (err != noErr) {
+        fprintf(stderr, "monitor: cannot select '%s': %d\n", name, (int)err);
+        goto fail;
+    }
+
+    memset(&fmt, 0, sizeof(fmt));
+    fmt.mSampleRate = (Float64)AUDIO_RATE;
+    fmt.mFormatID = kAudioFormatLinearPCM;
+    fmt.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+    fmt.mBytesPerPacket = 2;
+    fmt.mFramesPerPacket = 1;
+    fmt.mBytesPerFrame = 2;
+    fmt.mChannelsPerFrame = 1;
+    fmt.mBitsPerChannel = 16;
+
+    err = AudioUnitSetProperty(monitor_unit, kAudioUnitProperty_StreamFormat,
+                               kAudioUnitScope_Input, 0, &fmt, sizeof(fmt));
+    if (err != noErr) {
+        fprintf(stderr, "monitor: cannot set the client format: %d\n", (int)err);
+        goto fail;
+    }
+
+    err = AudioUnitSetProperty(monitor_unit,
+                               kAudioUnitProperty_SetRenderCallback,
+                               kAudioUnitScope_Input, 0, &cb, sizeof(cb));
+    if (err != noErr) {
+        fprintf(stderr, "monitor: cannot set the render callback: %d\n",
+                (int)err);
+        goto fail;
+    }
+
+    err = AudioUnitInitialize(monitor_unit);
+    if (err != noErr) {
+        fprintf(stderr, "monitor: AudioUnitInitialize: %d\n", (int)err);
+        goto fail;
+    }
+
+    fprintf(stderr, "monitor: playing the sidetone on %s (%s)\n", name, uid);
+    return 0;
+
+fail:
+    AudioComponentInstanceDispose(monitor_unit);
+    monitor_unit = NULL;
+    return -1;
+}
+
 int audio_backend_supports_mix(void)
 {
     return 1;
@@ -694,6 +862,8 @@ int audio_backend_open(unsigned int *actual_rate)
         mix_mic_mode = 0;
     }
 
+    (void)ca_open_monitor(dev);
+
     fprintf(stderr,
             "CoreAudio device: %s (%s)%s, rate: %u Hz, mono 16-bit, "
             "device buffer %u frames (%.1f ms)\n",
@@ -725,6 +895,16 @@ int audio_backend_run(void)
         }
     }
 
+    if (monitor_unit) {
+        err = AudioOutputUnitStart(monitor_unit);
+        if (err != noErr) {
+            fprintf(stderr, "monitor: cannot start: %d; continuing without it\n",
+                    (int)err);
+            AudioComponentInstanceDispose(monitor_unit);
+            monitor_unit = NULL;
+        }
+    }
+
     err = AudioOutputUnitStart(ca_unit);
     if (err != noErr) {
         fprintf(stderr, "AudioOutputUnitStart: %d\n", (int)err);
@@ -740,10 +920,15 @@ int audio_backend_run(void)
     AudioOutputUnitStop(ca_unit);
     if (mic_unit)
         AudioOutputUnitStop(mic_unit);
+    if (monitor_unit)
+        AudioOutputUnitStop(monitor_unit);
 
-    if (mix_dropped || mix_held)
+    if (mic_ring.dropped || mic_ring.held)
         fprintf(stderr, "mix-mic: %u captured frame(s) dropped, %u held\n",
-                mix_dropped, mix_held);
+                mic_ring.dropped, mic_ring.held);
+    if (monitor_ring.dropped || monitor_ring.held)
+        fprintf(stderr, "monitor: %u frame(s) dropped, %u held\n",
+                monitor_ring.dropped, monitor_ring.held);
 
     /* Hand the backend's own diagnostics to the core's exit summary. */
     audio_underruns += ca_gaps;
@@ -766,6 +951,12 @@ int audio_backend_run(void)
 
 void audio_backend_close(void)
 {
+    if (monitor_unit) {
+        AudioUnitUninitialize(monitor_unit);
+        AudioComponentInstanceDispose(monitor_unit);
+        monitor_unit = NULL;
+    }
+
     if (mic_unit) {
         AudioUnitUninitialize(mic_unit);
         AudioComponentInstanceDispose(mic_unit);
@@ -783,6 +974,7 @@ void audio_backend_close(void)
 void audio_backend_usage(FILE *out)
 {
     fputs("  CW_AUDIO_DEVICE=default   Output device name or UID (default)\n"
-          "  CW_MIX_MIC_DEVICE=default Input device name or UID for mix-mic\n",
+          "  CW_MIX_MIC_DEVICE=default Input device name or UID for mix-mic\n"
+          "  CW_MIX_MONITOR=none       Play the sidetone alone on this device\n",
           out);
 }

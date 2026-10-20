@@ -289,8 +289,22 @@ Then choose **BlackHole 2ch** as the microphone in the voice application.
 input). Capturing needs the Microphone permission, which macOS attributes to
 the terminal that launched the keyer.
 
-The mix goes to a single device, because there is no combine sink to fan it
-out. To hear the sidetone yourself as well, create a Multi-Output Device in
-Audio MIDI Setup containing BlackHole and your headphones and name that;
-you will then also hear your own microphone, which the Linux layout avoids by
-keeping the microphone out of the headphone path.
+`CW_MIX_MONITOR` names a device that plays the **sidetone alone**, so you can
+hear what you are sending while the mixed stream goes to the application:
+
+```
+CW_AUDIO_DEVICE="BlackHole 2ch" CW_MIX_MONITOR="MacBook Air Speakers" \
+  ./cwkeyer --setup mix-mic
+```
+
+It works without `mix-mic` too, which is the simple answer to "send the tone to
+BlackHole but let me hear it". The monitor runs about one device buffer behind
+the output, and you do not hear your own microphone.
+
+Two things about levels. The sidetone is the same 70% of full scale that a
+local sidetone uses, which is loud as a microphone feed and can make small
+speakers rasp when you listen back; `CW_KEYER_LEVEL=40` is a better starting
+point when mixing. And the microphone is ducked by the sidetone's
+instantaneous level rather than the sum being clipped, so the tone stays a
+clean sine and the mix cannot overload; between elements the microphone is
+untouched.
