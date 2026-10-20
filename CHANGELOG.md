@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `--setup` and `--list-devices` now live in the portable core and are built
+  on five backend primitives (`discover`, `close_devices`, `drain`,
+  `wait_press`, `wait_release`), so the two platforms share one wizard and
+  one listing instead of two copies. Device codes and the device view
+  (`input_device_t`) moved with them; a backend now fills in `id`, `order`,
+  `readable`, and an opaque `handle`.
+- `--help` takes its device argument, examples, key-code note, and
+  `--list-devices`/`--setup` paragraphs from the backend, so the macOS help
+  no longer talks about evdev. The portable environment variables are now
+  listed before the platform's, which moves the two `CW_ALSA_*` lines.
+- `sleep_ns()` uses `nanosleep()` instead of the Linux-only
+  `clock_nanosleep()`.
+- The Makefile detects clang by asking the compiler rather than by looking at
+  `$(CC)`, because `cc` is clang on macOS, and picks the Darwin frameworks.
 - Split the single source file into a portable core (`cwkeyer.c`) and a pair
   of Linux backends (`input_evdev.c`, `audio_alsa.c`), joined at the end of
   `cwkeyer.c` and described by `platform.h`. The core no longer includes
@@ -22,6 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- macOS support: `input_hid.c` and `audio_coreaudio.c` implement the backend
+  contract with IOKit HID and CoreAudio. A paddle adapter is a plain USB HID
+  keyboard there, so no driver is needed and the default
+  LEFTCTRL/RIGHTCTRL paddle mapping is unchanged. `--list-devices` and
+  `--setup` work as on Linux; devices are named `vendor:product:location`.
+  Exclusive access uses `kIOHIDOptionsTypeSeizeDevice` and needs root, so
+  losing it is a warning rather than an error; reading keyboard HID values
+  needs the Input Monitoring permission. Audio goes through a HALOutput
+  AudioUnit whose render callback feeds the same `generate_audio()`, at the
+  device buffer size (512 frames, 10.7 ms on the built-in speakers) with
+  about 12 ms measured output latency. A dropout is detected from a jump in
+  the unit's sample timeline and counted like an ALSA underrun.
 - Known paddle adapters are recognized by USB vendor/product ID, starting
   with the HRS PaddleAdapter. The table in `cwkeyer.c` stores the default
   dot/dash key codes and is a one-line addition per device. A single known

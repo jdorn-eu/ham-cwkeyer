@@ -874,13 +874,14 @@ static void set_test_key(unsigned long *bits, unsigned int code)
     bits[code / BITS_PER_ULONG] |= 1UL << (code % BITS_PER_ULONG);
 }
 
-static void set_test_device(input_device_t *dev, const char *path,
+static void set_test_device(input_device_t *dev, const char *id,
                             device_kind_t kind)
 {
     memset(dev, 0, sizeof(*dev));
-    snprintf(dev->path, sizeof(dev->path), "%s", path);
+    snprintf(dev->id, sizeof(dev->id), "%s", id);
+    dev->order = (int)device_event_number(id);
     dev->kind = kind;
-    dev->fd = -1;
+    dev->readable = 1;
 }
 
 static int run_device_list_tests(void)
@@ -932,8 +933,8 @@ static int run_device_list_tests(void)
      * are ambiguous. */
     input_device_t list[2];
     memset(list, 0, sizeof(list));
-    list[0].fd = 0;
-    list[1].fd = 0;
+    list[0].readable = 1;
+    list[1].readable = 1;
     list[1].vendor = 0x04d8;
     list[1].product = 0x01a6;
     if (find_known_paddle(list, 2) != 1)
@@ -944,7 +945,7 @@ static int run_device_list_tests(void)
         failures++;
     list[0].vendor = 0;
     list[0].product = 0;
-    list[1].fd = -1;
+    list[1].readable = 0;
     if (find_known_paddle(list, 2) != SIZE_MAX)
         failures++;
 
@@ -1059,8 +1060,6 @@ static int run_tap_tests(void)
     struct input_event e;
 
     memset(devices, 0, sizeof(devices));
-    devices[0].fd = -1;
-    devices[1].fd = -1;
 
     if (pipe2(fds[0], O_NONBLOCK) < 0) {
         return 1;
@@ -1071,13 +1070,15 @@ static int run_tap_tests(void)
         return 1;
     }
 
-    devices[0].fd = fds[0][0];
-    devices[1].fd = fds[1][0];
+    devices[0].readable = 1;
+    devices[0].handle = (void *)(intptr_t)fds[0][0];
+    devices[1].readable = 1;
+    devices[1].handle = (void *)(intptr_t)fds[1][0];
 
     /* Nothing queued: timeout, and the output index is untouched. */
     which = 99;
     code = 0;
-    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
+    if (input_backend_wait_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
         which != 99)
         failures++;
 
@@ -1088,7 +1089,7 @@ static int run_tap_tests(void)
         failures++;
     int64_t before = mono_ns();
     which = 99;
-    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 80, &which, &code) != 0 ||
+    if (input_backend_wait_press(devices, 2, SIZE_MAX, 80, &which, &code) != 0 ||
         which != 99)
         failures++;
     if (mono_ns() - before < 30000000LL)
@@ -1103,7 +1104,7 @@ static int run_tap_tests(void)
         failures++;
     which = 99;
     code = 0;
-    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 100, &which, &code) != 1 ||
+    if (input_backend_wait_press(devices, 2, SIZE_MAX, 100, &which, &code) != 1 ||
         which != 1 || code != KEY_COMMA)
         failures++;
 
@@ -1112,7 +1113,7 @@ static int run_tap_tests(void)
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
     which = 99;
-    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
+    if (input_backend_wait_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
         which != 99)
         failures++;
 
@@ -1122,7 +1123,7 @@ static int run_tap_tests(void)
         failures++;
     which = 99;
     code = 0;
-    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 100, &which, &code) != 1 ||
+    if (input_backend_wait_press(devices, 2, SIZE_MAX, 100, &which, &code) != 1 ||
         which != 1 || code != KEY_COMMA)
         failures++;
 
@@ -1134,7 +1135,7 @@ static int run_tap_tests(void)
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
     which = 99;
-    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
+    if (input_backend_wait_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
         which != 99)
         failures++;
 
@@ -1144,7 +1145,7 @@ static int run_tap_tests(void)
         failures++;
     which = 99;
     code = 0;
-    if (wait_for_paddle_press(devices, 2, 1, 100, &which, &code) != 1 ||
+    if (input_backend_wait_press(devices, 2, 1, 100, &which, &code) != 1 ||
         which != 1 || code != KEY_DOT)
         failures++;
 
@@ -1153,19 +1154,19 @@ static int run_tap_tests(void)
     if (write(fds[0][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
     which = 99;
-    if (wait_for_paddle_press(devices, 2, 1, 10, &which, &code) != 0 ||
+    if (input_backend_wait_press(devices, 2, 1, 10, &which, &code) != 0 ||
         which != 99)
         failures++;
 
     /* Draining removes that pending press. */
-    drain_device_events(devices, 2);
+    input_backend_drain(devices, 2);
     which = 99;
-    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
+    if (input_backend_wait_press(devices, 2, SIZE_MAX, 10, &which, &code) != 0 ||
         which != 99)
         failures++;
 
     /* Release detection ignores presses, autorepeat, and other keys. */
-    drain_device_events(devices, 2);
+    input_backend_drain(devices, 2);
     e = make_event(EV_KEY, KEY_COMMA, 1);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
@@ -1175,27 +1176,27 @@ static int run_tap_tests(void)
     e = make_event(EV_KEY, KEY_DOT, 0);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
-    if (wait_for_key_release(&devices[1], KEY_COMMA, 10) != 0)
+    if (input_backend_wait_release(&devices[1], KEY_COMMA, 10) != 0)
         failures++;
 
     e = make_event(EV_KEY, KEY_COMMA, 0);
     if (write(fds[1][1], &e, sizeof(e)) != (ssize_t)sizeof(e))
         failures++;
-    if (wait_for_key_release(&devices[1], KEY_COMMA, 100) != 1)
+    if (input_backend_wait_release(&devices[1], KEY_COMMA, 100) != 1)
         failures++;
 
     /* No release pending: timeout. */
-    if (wait_for_key_release(&devices[1], KEY_COMMA, 10) != 0)
+    if (input_backend_wait_release(&devices[1], KEY_COMMA, 10) != 0)
         failures++;
 
     /* Invalid filter index and no pollable devices are errors. */
-    if (wait_for_paddle_press(devices, 2, 2, 10, &which, &code) != -1)
+    if (input_backend_wait_press(devices, 2, 2, 10, &which, &code) != -1)
         failures++;
-    devices[0].fd = -1;
-    devices[1].fd = -1;
-    if (wait_for_paddle_press(devices, 2, SIZE_MAX, 10, &which, &code) != -1)
+    devices[0].readable = 0;
+    devices[1].readable = 0;
+    if (input_backend_wait_press(devices, 2, SIZE_MAX, 10, &which, &code) != -1)
         failures++;
-    if (wait_for_key_release(&devices[1], KEY_COMMA, 10) != -1)
+    if (input_backend_wait_release(&devices[1], KEY_COMMA, 10) != -1)
         failures++;
 
     close(fds[0][0]);

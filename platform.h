@@ -23,16 +23,18 @@
  *   4. One branch in the platform selection here, and one at the end of
  *      cwkeyer.c.
  *
- * Not yet behind the boundary: usage() and the startup banner still print
- * Linux device and environment text (the /dev/input path form, CW_ALSA_*,
- * PULSE_SINK).  That moves behind a backend hook when the second backend
- * lands, because until then there is nothing to say differently.
+ * input_device_t, the device listing, the --setup wizard, and the known
+ * paddle table live in the core; a backend only supplies the primitives in
+ * the input section below.
  */
 #ifndef CWKEYER_PLATFORM_H
 #define CWKEYER_PLATFORM_H
 
 #include <stddef.h>
 #include <stdio.h>
+
+/* The device view lives in the core; backends fill it in and read it. */
+typedef struct input_device_t input_device_t;
 
 #if defined(__APPLE__)
 #include "platform_macos.h"
@@ -68,15 +70,55 @@ void audio_backend_close(void);
  * grab_description() supplies the startup-banner text for the current grab
  * setting.
  *
- * list() and setup() back --list-devices and --setup. setup() fills in the
- * device path plus the dit/dah codes, the straight flag, and the grab
- * policy.
+ * The rest is the primitive set that the shared --list-devices listing and
+ * --setup wizard are built on, so neither has to exist twice:
+ *
+ *   discover()/close_devices()  fill in and release an input_device_t array
+ *   drain()                     drop events queued before a prompt
+ *   wait_press()                next non-pointer key press on one/all device
+ *   wait_release()              release of one key on one device
+ *
+ * wait_press() and wait_release() return 1 when the event happened, 0 on
+ * timeout, and -1 when the device cannot be polled. `only` is a device index
+ * or SIZE_MAX for "any device".
+ *
+ * devices_noun() and unreadable_hint() are the words the listing uses for
+ * the platform's device nodes and for the advice it gives about them.
  */
 void *input_backend_thread(void *arg);
 void  input_backend_suspend(void);
 void  input_backend_resume(void);
 const char *input_backend_grab_description(void);
-int   input_backend_list(FILE *out);
+const char *input_backend_devices_noun(void);
+const char *input_backend_unreadable_hint(void);
+
+int  input_backend_discover(input_device_t **out, size_t *out_count);
+void input_backend_close_devices(input_device_t *devices, size_t count);
+void input_backend_drain(const input_device_t *devices, size_t count);
+int  input_backend_wait_press(const input_device_t *devices, size_t count,
+                              size_t only, int timeout_ms,
+                              size_t *which, int *code);
+int  input_backend_wait_release(const input_device_t *device, int code,
+                                int timeout_ms);
+
 int   input_backend_setup(char *device_path, size_t path_size);
+int   input_backend_list(FILE *out);
+
+/*
+ * Help text.
+ *
+ * usage() keeps the portable half; a backend prints the parts that describe
+ * its own device argument and environment.  Splitting it this way keeps
+ * --help honest on a platform whose devices and settings differ.
+ */
+typedef enum {
+    USAGE_DEVICE_ARG,   /* the device placeholder on the usage line */
+    USAGE_EXAMPLES,     /* example command lines */
+    USAGE_KEYNOTE,      /* where raw key codes come from */
+    USAGE_DEVICE_OPTS,  /* the --list-devices and --setup paragraphs */
+} usage_part_t;
+
+void input_backend_usage(FILE *out, usage_part_t part, const char *prog);
+void audio_backend_usage(FILE *out);
 
 #endif /* CWKEYER_PLATFORM_H */

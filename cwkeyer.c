@@ -26,6 +26,9 @@
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE
+#endif
 
 #include <errno.h>
 #include <math.h>
@@ -293,26 +296,23 @@ static int install_signal_handlers(void)
 
 static void usage(const char *prog)
 {
+    fprintf(stderr, "usage: %s ", prog);
+    input_backend_usage(stderr, USAGE_DEVICE_ARG, prog);
     fprintf(stderr,
-        "usage: %s /dev/input/eventX [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode] [straight]\n"
+        " [wpm=12] [freq_hz=800] [dit_key] [dah_key] [nograb] [decode] [straight]\n"
         "       %s --help | --version | --list-devices | --setup\n"
         "\n"
-        "Examples:\n"
-        "  %s /dev/input/eventX\n"
-        "  %s /dev/input/eventX 25 700\n"
-        "  %s /dev/input/eventX 25 700 COMMA DOT\n"
-        "  %s /dev/input/eventX 25 700 COMMA DOT nograb\n"
-        "  %s /dev/input/eventX nograb\n"
-        "  %s /dev/input/event3 nograb decode\n"
-        "  %s /dev/input/eventX straight\n"
+        "Examples:\n", prog);
+    input_backend_usage(stderr, USAGE_EXAMPLES, prog);
+    fprintf(stderr,
         "\n"
         "Known key names include:\n"
         "  LEFTCTRL RIGHTCTRL LEFTSHIFT RIGHTSHIFT LEFTALT RIGHTALT\n"
         "  COMMA DOT PERIOD LEFT RIGHT LEFTBRACE RIGHTBRACE\n"
         "  INSERT DELETE Z X\n"
-        "\n"
-        "You may also use KEY_ prefixes, e.g. KEY_LEFTCTRL, or raw numeric\n"
-        "evdev key codes.\n"
+        "\n");
+    input_backend_usage(stderr, USAGE_KEYNOTE, prog);
+    fprintf(stderr,
         "\n"
         "Options:\n"
         "  nograb    Do not take exclusive control of the input device.\n"
@@ -327,14 +327,9 @@ static void usage(const char *prog)
         "            decode is ignored in this mode.\n"
         "  --help    Print this help and exit.\n"
         "  --version Print the version and exit.\n"
-        "  --list-devices, -L\n"
-        "            List readable /dev/input/event* devices, grouped as\n"
-        "            unknown, keyboard, or paddle, and exit. Colors are\n"
-        "            used only on a terminal; set NO_COLOR to disable them.\n"
-        "  --setup   Choose the paddle device by tapping the levers, then\n"
-        "            start with the default speed, pitch, level, and\n"
-        "            weighting. Known paddle adapters skip the tap test. A\n"
-        "            device that looks like a keyboard defaults to nograb.\n"
+        "  --list-devices, -L\n");
+    input_backend_usage(stderr, USAGE_DEVICE_OPTS, prog);
+    fprintf(stderr,
         "\n"
         "With no arguments on an interactive terminal, cwkeyer runs the\n"
         "same tap-to-select setup and then starts with the defaults.\n"
@@ -346,17 +341,12 @@ static void usage(const char *prog)
         "pitch, 9 0 change the level, and , . change the weighting.\n"
         "\n"
         "Environment:\n"
-        "  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
-        "  CW_ALSA_LATENCY_US=20000   Requested ALSA latency in us\n"
         "  CW_KEYER_LEVEL=70          Sidetone level, percent of full scale\n"
         "  CW_KEYER_DEBOUNCE_MS=10    Paddle RC filter time constant, 0..50 ms\n"
         "  CW_KEYER_WEIGHT_MS=0       Weighting, -25..25 ms; a constant time\n"
         "                             added to each mark and taken from the\n"
-        "                             following space (0 is strict ITU timing)\n"
-        "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
-        "                             unset, it defaults to cw_out (created by\n"
-        "                             cw-mic-mix.sh)\n",
-        prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        "                             following space (0 is strict ITU timing)\n");
+    audio_backend_usage(stderr);
 }
 
 static double parse_double_arg(const char *s,
@@ -536,19 +526,24 @@ static void sleep_ns(int64_t ns)
     req.tv_sec = (time_t)(ns / NS_PER_SEC);
     req.tv_nsec = (long)(ns % NS_PER_SEC);
 
+    /*
+     * nanosleep() is relative and, on both Linux and macOS, not affected by
+     * changes to the wall clock, which is what the monotonic deadlines around
+     * it need. clock_nanosleep() would say so explicitly but is Linux-only.
+     */
     while (keep_running()) {
         struct timespec rem;
-        int rc = clock_nanosleep(CLOCK_MONOTONIC, 0, &req, &rem);
+        int rc = nanosleep(&req, &rem);
 
         if (rc == 0)
             return;
 
-        if (rc == EINTR) {
+        if (rc < 0 && errno == EINTR) {
             req = rem;
             continue;
         }
 
-        fprintf(stderr, "clock_nanosleep: %s\n", strerror(rc));
+        fprintf(stderr, "nanosleep: %s\n", strerror(errno));
         request_stop(1);
         return;
     }
@@ -877,6 +872,540 @@ static void set_key_state(int code, int down)
     }
 }
 
+
+
+/*
+ * Input-device discovery for --list-devices (and, later, the setup wizard).
+ *
+ * classify_input_device() is deliberately a pure function of the device
+ * name and its evdev key bitmap so it can be unit tested; the syscall layer
+ * around it stays thin.  The classification is a hint, never a hard policy:
+ * the user can always override it.
+ */
+typedef enum {
+    DEVICE_KIND_UNKNOWN = 0,
+    DEVICE_KIND_KEYBOARD,
+    DEVICE_KIND_PADDLE
+} device_kind_t;
+
+static const char *device_kind_name(device_kind_t kind)
+{
+    switch (kind) {
+    case DEVICE_KIND_KEYBOARD:
+        return "keyboard";
+    case DEVICE_KIND_PADDLE:
+        return "paddle";
+    case DEVICE_KIND_UNKNOWN:
+    default:
+        return "unknown";
+    }
+}
+
+/*
+ * Known USB paddle adapters, matched by vendor/product ID.  Add new
+ * devices here; the label is shown by --list-devices and in the setup
+ * summary.
+ */
+typedef struct {
+    unsigned short vendor;
+    unsigned short product;
+    int dit_code;
+    int dah_code;
+    const char *label;
+} known_paddle_t;
+
+static const known_paddle_t known_paddles[] = {
+    /* hamradio.solutions / HRS PaddleAdapter (VBand). */
+    {0x04d8, 0x01a6, CWKEY_LEFTCTRL, CWKEY_RIGHTCTRL, "HRS PaddleAdapter"},
+};
+
+static const known_paddle_t *known_paddle_by_id(unsigned short vendor,
+                                                unsigned short product)
+{
+    for (size_t i = 0; i < sizeof(known_paddles) / sizeof(known_paddles[0]);
+         i++) {
+        if (known_paddles[i].vendor == vendor &&
+            known_paddles[i].product == product)
+            return &known_paddles[i];
+    }
+
+    return NULL;
+}
+
+static const char *known_paddle_label(unsigned short vendor,
+                                      unsigned short product)
+{
+    const known_paddle_t *known = known_paddle_by_id(vendor, product);
+
+    return known ? known->label : NULL;
+}
+
+/*
+ * Input devices, as the core sees them.
+ *
+ * A backend fills this in and the core only compares and prints it: `id` is
+ * the platform's stable name for the device (a /dev/input/event node, a
+ * vendor:product:location string), `order` sorts devices within a group, and
+ * `handle` is whatever the backend needs to reach the device.  The core never
+ * dereferences `handle`; only the backend's primitives do.
+ */
+struct input_device_t {
+    char id[64];
+    char name[256];
+    unsigned short vendor;
+    unsigned short product;
+    int order;           /* backend sort key within a group */
+    device_kind_t kind;
+    int default_paddles;
+    int readable;
+    int errnum;
+    void *handle;        /* backend-private */
+};
+
+/* One row per device, printed under its group header. */
+static void print_device_line(FILE *out, const char *path, const char *name,
+                              int default_paddles, const char *known_label)
+{
+    fprintf(out, "  %s  \"%s\"%s",
+            path, (name && *name) ? name : "(unnamed)",
+            default_paddles ?
+                "  (default paddle keys: LEFTCTRL RIGHTCTRL)" : "");
+    if (known_label)
+        fprintf(out, "  (known: %s)", known_label);
+    fputc('\n', out);
+}
+
+static void print_unreadable_line(FILE *out, const char *path, int errnum)
+{
+    fprintf(out, "  %s  [unreadable: %s]\n", path, strerror(errnum));
+}
+
+static int stream_supports_color(FILE *out)
+{
+    const char *term;
+
+    if (getenv("NO_COLOR") != NULL)
+        return 0;
+
+    term = getenv("TERM");
+    if (term && strcmp(term, "dumb") == 0)
+        return 0;
+
+    return isatty(fileno(out)) == 1;
+}
+
+static const char *device_kind_color(device_kind_t kind, int use_color)
+{
+    if (!use_color)
+        return "";
+
+    switch (kind) {
+    case DEVICE_KIND_PADDLE:
+        return "\033[1;32m";   /* bold green */
+    case DEVICE_KIND_KEYBOARD:
+        return "\033[36m";     /* cyan */
+    case DEVICE_KIND_UNKNOWN:
+    default:
+        return "\033[2m";      /* dim */
+    }
+}
+
+static void print_device_group(FILE *out, device_kind_t kind, int use_color)
+{
+    fputs(device_kind_color(kind, use_color), out);
+    fputs(device_kind_name(kind), out);
+    if (use_color)
+        fputs("\033[0m", out);
+    fputc('\n', out);
+}
+
+static void copy_device_id(char *dest, size_t size, const char *id)
+{
+    size_t len = strlen(id);
+
+    if (len >= size)
+        len = size - 1;
+
+    memcpy(dest, id, len);
+    dest[len] = '\0';
+}
+
+/*
+ * Find the single known paddle adapter in the discovered list.  More than
+ * one known adapter is ambiguous, so the caller falls back to tapping.
+ */
+static size_t find_known_paddle(const input_device_t *devices, size_t count)
+{
+    size_t found = SIZE_MAX;
+
+    for (size_t i = 0; i < count; i++) {
+        if (!devices[i].readable)
+            continue;
+        if (known_paddle_by_id(devices[i].vendor, devices[i].product) == NULL)
+            continue;
+        if (found != SIZE_MAX)
+            return SIZE_MAX;
+        found = i;
+    }
+
+    return found;
+}
+
+/* Setup output styling.  Colors are dropped when stderr is not a terminal. */
+#define ANSI_RESET  "\033[0m"
+#define ANSI_BOLD   "\033[1m"
+#define ANSI_DIM    "\033[2m"
+#define ANSI_GREEN  "\033[1;32m"
+#define ANSI_CYAN   "\033[36m"
+#define ANSI_YELLOW "\033[33m"
+#define ANSI_TITLE  "\033[1;36m"
+#define CLR(use, code) ((use) ? (code) : "")
+
+#define SETUP_RELEASE_TIMEOUT_MS 5000
+#define SETUP_TAP_TIMEOUT_MS 15000
+
+static void flush_stdin(void)
+{
+    if (isatty(STDIN_FILENO))
+        (void)tcflush(STDIN_FILENO, TCIFLUSH);
+}
+
+/*
+ * Read one yes/no answer without stdio buffering.  This keeps the answer
+ * logic testable through a pipe and leaves stdin ready for the runtime
+ * control thread.
+ */
+static int prompt_yes_no(const char *question, int default_yes)
+{
+    char line[64];
+    int use_color = stream_supports_color(stderr);
+
+    flush_stdin();
+
+    for (;;) {
+        size_t len = 0;
+
+        fprintf(stderr, "%s%s%s [%s%s%s] ",
+                CLR(use_color, ANSI_BOLD), question, CLR(use_color, ANSI_RESET),
+                CLR(use_color, ANSI_DIM), default_yes ? "Y/n" : "y/N",
+                CLR(use_color, ANSI_RESET));
+        fflush(stderr);
+
+        for (;;) {
+            char ch;
+            ssize_t got = read(STDIN_FILENO, &ch, 1);
+
+            if (got == 1) {
+                if (ch == '\n' || ch == '\r')
+                    break;
+                if (len + 1 < sizeof(line))
+                    line[len++] = ch;
+                continue;
+            }
+            if (got < 0 && errno == EINTR)
+                continue;
+            if (got < 0 || len == 0) {
+                fputc('\n', stderr);
+                return -1;
+            }
+            break;
+        }
+
+        line[len] = '\0';
+
+        char *answer = line;
+        while (*answer == ' ' || *answer == '\t')
+            answer++;
+
+        if (*answer == '\0')
+            return default_yes;
+        if (*answer == 'y' || *answer == 'Y')
+            return 1;
+        if (*answer == 'n' || *answer == 'N')
+            return 0;
+
+        fprintf(stderr, "%sPlease answer y or n.%s\n",
+                CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+    }
+}
+
+/*
+ * Report a detected lever the same way for both taps.
+ */
+static void print_detected_key(FILE *out, const input_device_t *device,
+                               const char *lever, int code, int use_color)
+{
+    fprintf(out, "\n  %s✓%s %s key %d on %s%s%s (%s)\n",
+            CLR(use_color, ANSI_GREEN), CLR(use_color, ANSI_RESET),
+            lever, code,
+            CLR(use_color, ANSI_BOLD), device->name, CLR(use_color, ANSI_RESET),
+            device->id);
+}
+
+/*
+ * Interactive device selection.  Tap the two levers to learn both key codes
+ * and the device, then confirm the grab policy.  Speed, pitch, level, and
+ * weighting keep their normal defaults and runtime controls.
+ */
+int input_backend_setup(char *device_path, size_t path_size)
+{
+    input_device_t *devices = NULL;
+    size_t count = 0;
+    size_t selected = SIZE_MAX;
+    int dit = 0;
+    int dah = 0;
+    int straight = 0;
+    int result = -1;
+    int use_color = stream_supports_color(stderr);
+
+    if (input_backend_discover(&devices, &count) < 0)
+        return -1;
+
+    if (count == 0) {
+        fprintf(stderr, "\n  %s⚠%s No /dev/input/event* devices found.\n",
+                CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+        goto out;
+    }
+
+    fprintf(stderr, "\n  %s◆ CW keyer setup%s\n\n",
+            CLR(use_color, ANSI_TITLE), CLR(use_color, ANSI_RESET));
+
+    size_t known_index = find_known_paddle(devices, count);
+
+    if (known_index != SIZE_MAX) {
+        const known_paddle_t *adapter =
+            known_paddle_by_id(devices[known_index].vendor,
+                               devices[known_index].product);
+
+        if (!adapter)
+            goto out;
+
+        selected = known_index;
+        dit = adapter->dit_code;
+        dah = adapter->dah_code;
+        straight = dit == dah;
+
+        fprintf(stderr,
+                "  %s✓%s Known paddle adapter: %s%s%s (%s)\n"
+                "    Using its default dot/dash keys (%d/%d); no tap test "
+                "needed.\n",
+                CLR(use_color, ANSI_GREEN), CLR(use_color, ANSI_RESET),
+                CLR(use_color, ANSI_BOLD), devices[known_index].name,
+                CLR(use_color, ANSI_RESET), devices[known_index].id,
+                dit, dah);
+    } else {
+        for (;;) {
+            size_t which = SIZE_MAX;
+            size_t second = SIZE_MAX;
+            int code = 0;
+            int rc;
+
+            input_backend_drain(devices, count);
+            fprintf(stderr, "  %s→%s Tap the DOT (dit) paddle, then release it.\n",
+                    CLR(use_color, ANSI_CYAN), CLR(use_color, ANSI_RESET));
+            rc = input_backend_wait_press(devices, count, SIZE_MAX,
+                                       SETUP_TAP_TIMEOUT_MS, &which, &code);
+            if (rc < 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s No readable input devices; check your udev "
+                        "rules (see the README).\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+                goto out;
+            }
+            if (rc == 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s No paddle press detected within %d seconds.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
+                        SETUP_TAP_TIMEOUT_MS / 1000);
+                if (prompt_yes_no("Try again?", 1) != 1)
+                    goto out;
+                continue;
+            }
+
+            flush_stdin();
+            print_detected_key(stderr, &devices[which], "DOT (dit)", code,
+                               use_color);
+
+            fprintf(stderr,
+                    "\n  %s→%s Release the DOT paddle, then tap the DASH (dah) "
+                    "paddle on the same device.\n",
+                    CLR(use_color, ANSI_CYAN), CLR(use_color, ANSI_RESET));
+            rc = input_backend_wait_release(&devices[which], code,
+                                      SETUP_RELEASE_TIMEOUT_MS);
+            if (rc < 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s Cannot poll the selected input device.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+                goto out;
+            }
+            if (rc == 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s Did not see the DOT paddle release.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+                if (prompt_yes_no("Try again?", 1) != 1)
+                    goto out;
+                continue;
+            }
+
+            rc = input_backend_wait_press(devices, count, which,
+                                       SETUP_TAP_TIMEOUT_MS, &second, &dah);
+            if (rc < 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s Cannot poll the selected input device.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+                goto out;
+            }
+            if (rc == 0) {
+                fprintf(stderr,
+                        "\n  %s⚠%s No paddle press detected within %d seconds.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
+                        SETUP_TAP_TIMEOUT_MS / 1000);
+                if (prompt_yes_no("Try again?", 1) != 1)
+                    goto out;
+                continue;
+            }
+
+            flush_stdin();
+            print_detected_key(stderr, &devices[second], "DASH (dah)", dah,
+                               use_color);
+            selected = second;
+            dit = code;
+            straight = 0;
+
+            if (dit == dah) {
+                int straight_choice;
+
+                fprintf(stderr,
+                        "\n  %s◆%s Both taps used key %d; that looks like a "
+                        "straight key.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
+                        dit);
+                straight_choice = prompt_yes_no("Use straight-key mode?", 1);
+                if (straight_choice < 0)
+                    goto out;
+                if (!straight_choice)
+                    continue;
+                straight = 1;
+                dah = dit;
+            }
+
+            int use_it = prompt_yes_no("Use this device?", 1);
+            if (use_it < 0)
+                goto out;
+            if (!use_it)
+                continue;
+            break;
+        }
+    }
+
+    const char *known = known_paddle_label(devices[selected].vendor,
+                                           devices[selected].product);
+    fprintf(stderr, "\n  %s●%s Using %s%s%s (%s), detected as %s",
+            CLR(use_color, ANSI_GREEN), CLR(use_color, ANSI_RESET),
+            CLR(use_color, ANSI_BOLD), devices[selected].name,
+            CLR(use_color, ANSI_RESET), devices[selected].id,
+            device_kind_name(devices[selected].kind));
+    if (known)
+        fprintf(stderr, " (%s)", known);
+    fputc('\n', stderr);
+
+    int default_grab = devices[selected].kind == DEVICE_KIND_PADDLE;
+    int grab = prompt_yes_no("Take exclusive control of this device?",
+                             default_grab);
+    if (grab < 0)
+        goto out;
+
+    if (grab && devices[selected].kind == DEVICE_KIND_KEYBOARD) {
+        int sure;
+
+        fprintf(stderr,
+                "\n  %s⚠%s Grabbing a keyboard hides it from the desktop and "
+                "terminal; Ctrl+C may not reach cwkeyer.\n",
+                CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+        sure = prompt_yes_no("Continue with exclusive grab?", 0);
+        if (sure < 0)
+            goto out;
+        if (!sure)
+            grab = 0;
+    }
+
+    dit_code = dit;
+    dah_code = dah;
+    straight_mode = straight;
+    do_grab = grab;
+    copy_device_id(device_path, path_size, devices[selected].id);
+    result = 0;
+
+out:
+    input_backend_close_devices(devices, count);
+    return result;
+}
+
+/*
+ * Unknown devices first, then keyboards, then paddles, and within a group
+ * in natural event-number order (event2 before event10).
+ */
+static int compare_input_devices(const void *a, const void *b)
+{
+    const input_device_t *ea = a;
+    const input_device_t *eb = b;
+
+    if (ea->kind != eb->kind)
+        return ea->kind < eb->kind ? -1 : 1;
+
+    if (ea->order != eb->order)
+        return ea->order < eb->order ? -1 : 1;
+
+    return strcmp(ea->id, eb->id);
+}
+
+int input_backend_list(FILE *out)
+{
+    input_device_t *devices;
+    size_t count;
+    int unreadable = 0;
+    int current_kind = -1;
+    int use_color;
+
+    if (input_backend_discover(&devices, &count) < 0)
+        return -1;
+
+    if (count == 0) {
+        fprintf(out, "no %s devices found\n", input_backend_devices_noun());
+        input_backend_close_devices(devices, count);
+        return 0;
+    }
+
+    use_color = stream_supports_color(out);
+    qsort(devices, count, sizeof(*devices), compare_input_devices);
+
+    for (size_t i = 0; i < count; i++) {
+        if ((int)devices[i].kind != current_kind) {
+            if (current_kind >= 0)
+                fputc('\n', out);
+            current_kind = (int)devices[i].kind;
+            print_device_group(out, devices[i].kind, use_color);
+        }
+
+        if (!devices[i].readable) {
+            print_unreadable_line(out, devices[i].id, devices[i].errnum);
+            unreadable++;
+        } else {
+            const char *known = known_paddle_label(devices[i].vendor,
+                                                   devices[i].product);
+            print_device_line(out, devices[i].id, devices[i].name,
+                              devices[i].default_paddles, known);
+        }
+    }
+
+    if (unreadable) {
+        fprintf(out, "\n%d device(s) could not be read; %s.\n",
+                unreadable, input_backend_unreadable_hint());
+    }
+
+    input_backend_close_devices(devices, count);
+    return 0;
+}
 
 /*
  * The keyer reads paddles through the input backend, not stdin, but key

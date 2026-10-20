@@ -264,3 +264,12 @@ void audio_backend_close(void)
         alsa_pcm = NULL;
     }
 }
+
+void audio_backend_usage(FILE *out)
+{
+    fputs("  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
+          "  CW_ALSA_LATENCY_US=20000   Requested ALSA latency in us\n"
+          "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
+          "                             unset, it defaults to cw_out (created by\n"
+          "                             cw-mic-mix.sh)\n", out);
+}

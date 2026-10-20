@@ -35,20 +35,26 @@ of platform backends:
 
 ```
 cwkeyer.c          portable core: iambic keyer, RC filter, weighting,
-                   decoder, PCM renderer, terminal handling, arguments, main
-platform.h         the backend contract
-platform_linux.h   CWKEY_* key codes for Linux
-input_evdev.c      Linux input: /dev/input discovery, grab, setup wizard
+                   decoder, PCM renderer, device listing, setup wizard,
+                   terminal handling, arguments, main
+platform.h         the backend contract and platform selection
+platform_linux.h   CWKEY_* key codes for Linux (evdev codes)
+platform_macos.h   CWKEY_* key codes for macOS (HID usages)
+input_evdev.c      Linux input: /dev/input discovery, grab, primitive waits
 audio_alsa.c       Linux output: ALSA, default PCM "pulse"
+input_hid.c        macOS input: IOHID keyboards, seize, primitive waits
+audio_coreaudio.c  macOS output: CoreAudio HALOutput render callback
 ```
 
 `cwkeyer.c` ends with an `#include` of the backend pair for the target, so a
 backend sees every core static and needs no exported API of its own. The
-whole contract is declared in `platform.h`: `audio_backend_open/run/close`
-and `input_backend_thread/suspend/resume/grab_description/list/setup`. The
-keyer core, the RC filter, the weighting, the decoder, and the renderer
-never name a platform API; keys are named through the portable `CWKEY_*`
-namespace, which each platform supplies.
+whole contract is declared in `platform.h`: `audio_backend_open/run/close`,
+`input_backend_thread/suspend/resume/grab_description`, and the primitives
+(`discover`, `close_devices`, `drain`, `wait_press`, `wait_release`) that the
+shared `--list-devices` listing and `--setup` wizard are built on, so neither
+has to exist twice. The keyer core, the RC filter, the weighting, the
+decoder, and the renderer never name a platform API; keys are named through
+the portable `CWKEY_*` namespace, which each platform supplies.
 
 The backends are included rather than linked so the test suites can keep
 including `cwkeyer.c` and reaching into internals directly. Porting means
@@ -93,6 +99,49 @@ make test    # iambic, RC filter, evdev, decode, driver, signal, and script chec
 make analyze # GCC -fanalyzer
 make coverage # gcovr HTML/XML report in coverage/
 ```
+
+## macOS
+
+The same source builds on macOS with the IOKit and CoreAudio backends:
+
+```
+make                 # the Makefile picks the Darwin backends and frameworks
+./cwkeyer --list-devices
+./cwkeyer --setup
+```
+
+No driver is needed. A paddle adapter is a plain USB HID keyboard on macOS,
+which is exactly what the HRS PaddleAdapter reports: its report descriptor
+offers nothing but the eight modifier usages 0xE0..0xE7, so the default
+LEFTCTRL/RIGHTCTRL paddle mapping works unchanged. Devices are named
+`vendor:product:location` (for example `04d8:01a6:01110000`), which is what
+`--list-devices` prints and what the keyer takes as its device argument; the
+built-in keyboard usually reports zeros for vendor and product and is
+distinguished by its location instead.
+
+Three things differ from Linux, all of them forced by the platform:
+
+- **Input Monitoring.** macOS only delivers keyboard HID values to a process
+  holding the Input Monitoring permission, and attributes it to whatever
+  launched the keyer (your terminal). If `--setup` never sees a tap, grant it
+  under System Settings → Privacy & Security → Input Monitoring.
+- **Exclusive access needs root.** `kIOHIDOptionsTypeSeizeDevice` stands in
+  for `EVIOCGRAB`. Without it the levers also reach the foreground
+  application. The keyer tries to seize but falls back to listening
+  non-exclusively with a warning, which is harmless for a dedicated adapter
+  and noisy on a normal keyboard, where `nograb` is the better choice.
+- **Latency is the device buffer.** CoreAudio asks for one device buffer per
+  render callback (512 frames, 10.7 ms on the built-in speakers) and the
+  measured output latency is about 12 ms. `CW_AUDIO_DEVICE` picks the output
+  by name or UID; `default` follows the system output. Mark lengths are
+  unaffected, because every mark is still rendered at sample boundaries.
+
+A dropout is reported the way an ALSA underrun is, but without an error code:
+CoreAudio's own sample timeline jumps when audio is lost, and that jump is
+counted and shown in the exit summary.
+
+`make test` and `make analyze` are Linux-only for now: the suites drive evdev
+fixtures and ALSA's `null` device, and `-fanalyzer` is a GCC option.
 
 ## Install
 

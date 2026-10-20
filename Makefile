@@ -34,7 +34,11 @@ GCC_WARNINGS = $(COMMON_WARNINGS) \
 	-Wduplicated-branches -Wrestrict -Wstringop-overflow=4 \
 	-Warray-bounds=2 -Wstrict-overflow=4 -Wshift-overflow=2 -Wtrampolines
 
-ifneq ($(findstring clang,$(CC)),)
+# `cc` is clang on macOS and gcc on most Linux systems, so ask the compiler
+# rather than trusting the name.
+IS_CLANG := $(shell $(CC) --version 2>/dev/null | grep -qi clang && echo 1)
+
+ifeq ($(IS_CLANG),1)
 WARNINGS = $(COMMON_WARNINGS)
 else
 WARNINGS = $(GCC_WARNINGS)
@@ -44,7 +48,7 @@ endif
 # is not ours to restructure.  GCC's level-4 -Wstrict-overflow reports false
 # positives on some of it that vary between GCC versions; clang has no such
 # warning.  The main code keeps the full warning set.
-ifneq ($(findstring clang,$(CC)),)
+ifeq ($(IS_CLANG),1)
 DIFF_WARNINGS =
 else
 DIFF_WARNINGS = -Wno-strict-overflow
@@ -65,6 +69,8 @@ DARWIN_SRCS = platform.h platform_macos.h input_hid.c audio_coreaudio.c
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 PLATFORM_SRCS = $(DARWIN_SRCS)
+LDLIBS    = -framework AudioToolbox -framework CoreAudio -framework IOKit \
+            -framework CoreFoundation -lm
 else
 PLATFORM_SRCS = $(LINUX_SRCS)
 endif

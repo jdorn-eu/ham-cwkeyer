@@ -28,19 +28,51 @@ cwkeyer \- low-latency iambic CW sidetone keyer
 .B \-\-setup
 .SH DESCRIPTION
 .B cwkeyer
-reads an evdev keyboard-emulating paddle adapter and generates an ALSA
-sidetone. It implements the Curtis 8044 type B (Accu-keyer) iambic keyer,
+reads a keyboard-emulating paddle adapter and generates a sidetone. It
+implements the Curtis 8044 type B (Accu-keyer) iambic keyer,
 with dot/dash paddle memory, and can optionally decode the keyed text. A
 .B straight
 mode passes the paddles through as a manual key instead.
 .PP
+The details of reading the paddles and playing the tone belong to the
+platform: on Linux the adapter is read through evdev and the sidetone goes to
+ALSA, on macOS it is read through IOKit HID and played through CoreAudio (see
+.BR MACOS ).
+.PP
 The paddle inputs are filtered with a digital approximation of the 8044's
 external RC network. The recommended 1 M\(*W/0.01 \(*mF network has a time
 constant of about 10 ms.
+.SH MACOS
+The same binary runs on macOS, where a paddle adapter is a plain USB HID
+keyboard and no driver or kernel extension is involved. The device argument
+is then
+.I vendor:product:location
+(for example
+.IR 04d8:01a6:01110000 )
+as printed by
+.BR \-\-list\-devices ,
+and the built-in keyboard is usable as a paddle with
+.B nograb
+and your own key names.
+.PP
+Reading keyboard input needs the Input Monitoring permission, which macOS
+attributes to the terminal that launched the keyer. Taking exclusive control
+stands in for evdev's grab and needs root; without it the levers also reach
+the foreground application, which
+.B cwkeyer
+reports as a warning. The
+.B CW_ALSA_DEVICE
+and
+.B PULSE_SINK
+variables do not apply; use
+.B CW_AUDIO_DEVICE
+to choose the output by name or UID. Latency is the output device's buffer,
+and the achieved value is printed at startup and at exit.
 .SH ARGUMENTS
 .TP
 .I /dev/input/eventX
-The evdev device to read. Use
+The evdev device to read (Linux; see
+.BR MACOS ). Use
 .BR evtest (8)
 or
 .BR libinput (1)
