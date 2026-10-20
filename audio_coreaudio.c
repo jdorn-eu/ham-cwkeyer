@@ -277,6 +277,7 @@ int audio_backend_open(unsigned int *actual_rate)
     };
     AudioComponent comp;
     AudioDeviceID dev;
+    int follows_default;
     char name[256], uid[256];
     UInt32 one = 1, zero = 0;
     OSStatus err;
@@ -285,17 +286,35 @@ int audio_backend_open(unsigned int *actual_rate)
     UInt32 got_size = sizeof(got);
     AURenderCallbackStruct cb = { .inputProc = ca_render, .inputProcRefCon = NULL };
 
-    dev = ca_find_device(want);
-    if (!dev) {
-        fprintf(stderr, "no audio output device matching '%s'\n",
-                want && *want ? want : "default");
-        fprintf(stderr, "available output devices:\n");
-        ca_list_devices();
-        return -1;
+    /*
+     * With no device asked for, use DefaultOutput: a specialisation of the
+     * same unit that follows the Sound Prefs default, so plugging in
+     * headphones moves the sidetone with everything else.  Naming a device
+     * pins it instead, which is what the mic-mix setup wants.
+     */
+    follows_default = !want || !*want || strcmp(want, "default") == 0;
+
+    if (follows_default) {
+        dev = ca_default_output();
+        if (!dev) {
+            fprintf(stderr, "no default audio output device\n");
+            return -1;
+        }
+        desc.componentSubType = kAudioUnitSubType_DefaultOutput;
+    } else {
+        dev = ca_find_device(want);
+        if (!dev) {
+            fprintf(stderr, "no audio output device matching '%s'\n", want);
+            fprintf(stderr, "available output devices:\n");
+            ca_list_devices();
+            return -1;
+        }
+        desc.componentSubType = kAudioUnitSubType_HALOutput;
     }
+
     if (!ca_has_output(dev)) {
         fprintf(stderr, "audio device '%s' has no output streams\n",
-                want && *want ? want : "default");
+                follows_default ? "default" : want);
         return -1;
     }
 
@@ -323,11 +342,15 @@ int audio_backend_open(unsigned int *actual_rate)
     (void)AudioUnitSetProperty(ca_unit, kAudioOutputUnitProperty_EnableIO,
                                kAudioUnitScope_Input, 1, &zero, sizeof(zero));
 
-    err = AudioUnitSetProperty(ca_unit, kAudioOutputUnitProperty_CurrentDevice,
-                               kAudioUnitScope_Global, 0, &dev, sizeof(dev));
-    if (err != noErr) {
-        fprintf(stderr, "cannot select audio device '%s': %d\n", name, (int)err);
-        goto fail;
+    /* DefaultOutput finds the device itself and keeps following it. */
+    if (!follows_default) {
+        err = AudioUnitSetProperty(ca_unit, kAudioOutputUnitProperty_CurrentDevice,
+                                   kAudioUnitScope_Global, 0, &dev, sizeof(dev));
+        if (err != noErr) {
+            fprintf(stderr, "cannot select audio device '%s': %d\n", name,
+                    (int)err);
+            goto fail;
+        }
     }
 
     memset(&fmt, 0, sizeof(fmt));
@@ -397,9 +420,10 @@ int audio_backend_open(unsigned int *actual_rate)
     }
 
     fprintf(stderr,
-            "CoreAudio device: %s (%s), rate: %u Hz, mono 16-bit, "
+            "CoreAudio device: %s (%s)%s, rate: %u Hz, mono 16-bit, "
             "device buffer %u frames (%.1f ms)\n",
-            name, uid, ca_rate, (unsigned)ca_device_buffer,
+            name, uid, follows_default ? " [system default]" : "",
+            ca_rate, (unsigned)ca_device_buffer,
             1000.0 * (double)ca_device_buffer / (double)ca_rate);
 
     return 0;

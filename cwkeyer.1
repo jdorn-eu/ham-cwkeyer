@@ -214,9 +214,10 @@ the combined sink created by
 .BR cw-mic-mix (1).
 .TP
 .B CW_AUDIO_DEVICE
-macOS only. Output device by name or UID (default
-.BR default ,
-which follows the system output at startup).
+macOS only. Output device by name or UID, which pins it. The default
+.RB ( default )
+tracks the system output, including later changes, so headphones plugged in
+mid-session take the sidetone with them.
 .TP
 .B NO_COLOR
 If set, do not color the output of

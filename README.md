@@ -133,9 +133,11 @@ Three things differ from Linux, all of them forced by the platform:
   on a normal keyboard.
 - **Latency is the device buffer.** CoreAudio asks for one device buffer per
   render callback (512 frames, 10.7 ms on the built-in speakers) and the
-  measured output latency is about 12 ms. `CW_AUDIO_DEVICE` picks the output
-  by name or UID; `default` follows the system output. Mark lengths are
-  unaffected, because every mark is still rendered at sample boundaries.
+  measured output latency is about 12 ms. `CW_AUDIO_DEVICE` names an output
+  device or UID and pins it; the default follows the system output and keeps
+  following it, so plugging in headphones moves the sidetone with everything
+  else. Mark lengths are unaffected either way, because every mark is still
+  rendered at sample boundaries.
 
 A dropout is reported the way an ALSA underrun is, but without an error code:
 CoreAudio's own sample timeline jumps when audio is lost, and that jump is
