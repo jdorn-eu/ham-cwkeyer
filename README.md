@@ -67,11 +67,16 @@ The build is deliberately strict by default: `-Werror` plus a broad warning set 
 
 `make test` builds and runs the hardware-independent suites below; it does not touch your input device, audio routing, or sound server:
 
-- `tests/test_keyer.c` — the type B iambic core (held-paddle repeats, alternating squeezes, the N/A memory cases, and the `C` extra-element rule), the RC paddle filter (glitches rejected, bounce smoothed, threshold delay), evdev event parsing (press/release, autorepeat ignored, `SYN_DROPPED` resync), the decode display (character and word gaps, unknown symbols dropped), the PCM renderer (envelope, spacing across buffer boundaries, late marks, high-speed ramp, level scaling), and a short run of the real `keyer_thread` to check mark sequencing.
+`make test` picks the per-platform suites: the portable two plus `test_audio`
+and `test_evdev` on Linux, or `test_coreaudio` and `test_hid` on macOS.
+
+- `tests/test_keyer.c` — the portable core: the type B iambic core (held-paddle repeats, alternating squeezes, the N/A memory cases, and the `C` extra-element rule), the RC paddle filter (glitches rejected, bounce smoothed, threshold delay), the decode display (character and word gaps, unknown symbols dropped), the PCM renderer (envelope, spacing across buffer boundaries, late marks, high-speed ramp, level scaling), a short run of the real `keyer_thread` to check mark sequencing, the device listing and prompt formatting, the runtime controls, the `main()` startup paths, and the command line itself (options in any order, `--setup` with settings, the wording of error messages, `--help` on stdout). On Linux it also covers evdev event parsing (press/release, autorepeat ignored, `SYN_DROPPED` resync), the capability bitmap and classification, and the pipe-driven tap waits.
 - `tests/test_signals.c` — `SIGPIPE` ignored, a stop signal stops the loops, terminal disable/restore is idempotent on a pty, queued tty input is discarded on restore, a spurious `SIGCONT` does not re-disable echo, and `SIGTSTP`/`SIGCONT` genuinely stop and resume through the signal-waiting thread.
 - `tests/test_audio.c` — the audio layer against ALSA's built-in `null` PCM (no sound server or hardware): `open_audio()` opens and negotiates a rate, `pcm_write_all()` writes generated periods, `audio_loop()` runs in a thread and stops cleanly, and a missing device and an at-Nyquist tone are both rejected.
 - `tests/test_evdev.c` — `input_backend_thread()` fed through a FIFO standing in for the input device: press/release update the paddle state, the press edge is latched, and state is cleared on exit.
-- `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation.
+- `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation. Linux only.
+- `tests/test_coreaudio.c` — `ca_render()` driven with a synthetic buffer list, which is what CoreAudio does on its realtime thread: silence is exactly zero, a queued mark has the right level and stops at its length, a jump in the sample timeline is counted as a dropout, an implausible host time (from a suspend) is kept out of the latency figures, an unexpected buffer list is refused without being written, the microphone is summed with clipping, and the capture ring drops the oldest and holds the last sample.
+- `tests/test_hid.c` — the backend's decision logic through `hid_dispatch()`: run-mode press and release with press-order stamping, waiting for a press or a release including the device filter, and ignoring other keys, other usage pages, value 2, and callbacks that arrive after their phase ended.
 
 The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `lookup_key`), input-device classification for `--list-devices`, paddle tap detection, setup prompts, runtime control keys, and a real `main()` startup/failure/shutdown path.
 
@@ -138,6 +143,11 @@ Three things differ from Linux, all of them forced by the platform:
   following it, so plugging in headphones moves the sidetone with everything
   else. Mark lengths are unaffected either way, because every mark is still
   rendered at sample boundaries.
+
+The capture ring is measured rather than merely reasoned about: a minute of
+`mix-mic` into BlackHole reported no dropped frames and one callback's worth
+held (512 frames, before the microphone had produced its first buffer), so the
+two units share a clock closely enough that no resampling is needed.
 
 A dropout is reported the way an ALSA underrun is, but without an error code:
 CoreAudio's own sample timeline jumps when audio is lost, and that jump is

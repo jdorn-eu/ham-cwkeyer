@@ -184,6 +184,13 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
         double lead = host_seconds(ts->mHostTime) -
                       host_seconds(mach_absolute_time());
 
+        /*
+         * The first callback after the process was suspended carries a host
+         * time from before the stop, which measures the suspend rather than
+         * the audio path.  Ignore leads that no output device could justify.
+         */
+        if (lead < -0.5)
+            goto after_latency;
         if (lead < ca_delay_min)
             ca_delay_min = lead;
         if (lead > ca_delay_max)
@@ -192,6 +199,7 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
         ca_delay_n++;
     }
 
+after_latency:
     if (frames > ca_slice_frames)
         ca_slice_frames = frames;
 
@@ -536,7 +544,6 @@ int audio_backend_open(unsigned int *actual_rate)
     AudioDeviceID dev;
     int follows_default;
     char name[256], uid[256];
-    UInt32 one = 1, zero = 0;
     OSStatus err;
     AudioStreamBasicDescription fmt;
     AudioStreamBasicDescription got;
@@ -591,13 +598,12 @@ int audio_backend_open(unsigned int *actual_rate)
         return -1;
     }
 
-    err = AudioUnitSetProperty(ca_unit, kAudioOutputUnitProperty_EnableIO,
-                               kAudioUnitScope_Output, 0, &one, sizeof(one));
-    if (err != noErr)
-        fprintf(stderr, "warning: cannot enable audio output: %d\n", (int)err);
-
-    (void)AudioUnitSetProperty(ca_unit, kAudioOutputUnitProperty_EnableIO,
-                               kAudioUnitScope_Input, 1, &zero, sizeof(zero));
+    /*
+     * No EnableIO here: an output unit is output-only by default, which is
+     * exactly what this one is for, and DefaultOutput does not even have the
+     * property (it would return kAudioUnitErr_InvalidProperty).  Only the
+     * capture unit below has to turn anything on.
+     */
 
     /* DefaultOutput finds the device itself and keeps following it. */
     if (!follows_default) {

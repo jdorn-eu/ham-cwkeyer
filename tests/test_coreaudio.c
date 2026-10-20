@@ -50,6 +50,9 @@ static void reset_audio(void)
     ca_last_frames = 0;
     ca_gaps = 0;
     ca_slice_frames = 0;
+    ca_delay_min = 1e9;
+    ca_delay_max = 0;
+    ca_delay_sum = 0;
     ca_delay_n = 0;
 }
 
@@ -168,6 +171,47 @@ typedef struct {
     AudioBufferList list;
     AudioBuffer extra;
 } two_buffer_list_t;
+
+/* Monotonic ticks for a duration, for synthesising host times. */
+static uint64_t ticks_for(double seconds)
+{
+    mach_timebase_info_data_t tb;
+
+    mach_timebase_info(&tb);
+    return (uint64_t)(seconds * 1e9 * (double)tb.denom / (double)tb.numer);
+}
+
+static void test_latency_filter(void)
+{
+    int16_t buf[64];
+    AudioBufferList list;
+    AudioTimeStamp ts;
+
+    reset_audio();
+    wpm = 12.0;
+    freq_hz = 800.0;
+    volume_percent = 70;
+    make_list(&list, buf, 64);
+
+    /* A host time of now means no presentation delay, which is plausible. */
+    memset(&ts, 0, sizeof(ts));
+    ts.mSampleTime = 0;
+    ts.mHostTime = mach_absolute_time();
+    ts.mFlags = kAudioTimeStampHostTimeValid;
+    (void)ca_render(NULL, NULL, &ts, 0, 64, &list);
+    expect(ca_delay_n == 1, "a plausible presentation delay was not counted");
+
+    /* A host time from before a suspend measures the suspend, not the audio
+     * path, and must not drag the average down. */
+    memset(&ts, 0, sizeof(ts));
+    ts.mSampleTime = 64;
+    ts.mHostTime = mach_absolute_time() - ticks_for(1.0);
+    ts.mFlags = kAudioTimeStampHostTimeValid;
+    (void)ca_render(NULL, NULL, &ts, 0, 64, &list);
+    expect(ca_delay_n == 1, "a suspended gap was counted as presentation delay");
+    expect(ca_delay_min > -0.001,
+           "the latency minimum was dragged negative by a suspend");
+}
 
 static void test_odd_buffer_lists(void)
 {
@@ -315,6 +359,7 @@ int main(void)
     test_silence_and_level();
     test_mark_ends();
     test_dropout_detection();
+    test_latency_filter();
     test_odd_buffer_lists();
 
     if (failures == 0)

@@ -99,6 +99,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Two defects on the macOS default-output path, found by running it: the
+  playback unit asked for `kAudioOutputUnitProperty_EnableIO`, which
+  `DefaultOutput` does not have, so every run without `CW_AUDIO_DEVICE`
+  printed `warning: cannot enable audio output: -10879`. An output unit is
+  output-only by default, so the call was both unnecessary and wrong for that
+  subtype; only the capture unit enables anything. And the presentation-delay
+  statistics counted the first callback after a `SIGTSTP`/`SIGCONT`, whose
+  host time predates the stop, which reported a minimum latency of -1006 ms
+  for a session of ordinary 12 ms latency. Implausible leads are now ignored.
+
 - macOS crash (SIGBUS/SIGSEGV) on some runs: the setup wizard's HID input
   callback was registered with a pointer to a stack frame that had already
   returned, and `IOHIDDeviceRegisterInputValueCallback(NULL)` is not a
