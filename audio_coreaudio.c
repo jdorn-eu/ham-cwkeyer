@@ -58,6 +58,10 @@ static unsigned int ca_delay_n;
 static uint32_t ca_slice_frames;
 static UInt32 ca_device_buffer;
 
+#define CA_MAX_GAP_NOTES 4
+static double ca_gap_expect[CA_MAX_GAP_NOTES];
+static double ca_gap_got[CA_MAX_GAP_NOTES];
+
 static double host_seconds(uint64_t ticks)
 {
     static mach_timebase_info_data_t tb;
@@ -91,11 +95,13 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
         double expect = (double)ca_last_sample_time + (double)ca_last_frames;
 
         if (ts->mSampleTime < expect - 0.5 || ts->mSampleTime > expect + 0.5) {
+            /* No stdio here: this runs on CoreAudio's realtime thread.  Record
+             * the first few and report them once the unit has stopped. */
+            if (ca_gaps < CA_MAX_GAP_NOTES) {
+                ca_gap_expect[ca_gaps] = expect;
+                ca_gap_got[ca_gaps] = ts->mSampleTime;
+            }
             ca_gaps++;
-            if (ca_gaps <= 3)
-                fprintf(stderr,
-                        "warning: audio dropout #%u: expected sample time %.0f, "
-                        "got %.0f\n", ca_gaps, expect, ts->mSampleTime);
         }
     }
     ca_last_sample_time = (uint64_t)ts->mSampleTime;
@@ -426,6 +432,11 @@ int audio_backend_run(void)
 
     /* Hand the backend's own diagnostics to the core's exit summary. */
     audio_underruns += ca_gaps;
+
+    for (unsigned int i = 0; i < ca_gaps && i < CA_MAX_GAP_NOTES; i++)
+        fprintf(stderr,
+                "warning: audio dropout #%u: expected sample time %.0f, "
+                "got %.0f\n", i + 1, ca_gap_expect[i], ca_gap_got[i]);
 
     if (ca_delay_n) {
         fprintf(stderr, "audio: output latency %.1f ms (min %.1f, max %.1f), "

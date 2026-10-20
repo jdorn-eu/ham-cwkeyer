@@ -67,6 +67,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- macOS crash (SIGBUS/SIGSEGV) on some runs: the setup wizard's HID input
+  callback was registered with a pointer to a stack frame that had already
+  returned, and `IOHIDDeviceRegisterInputValueCallback(NULL)` is not a
+  documented unregister, so IOKit kept dispatching to it. The keyer's own
+  thread shares the device, so the next key press called a callback whose
+  context was freed. The backend now uses one callback for both phases with
+  all of its state in a static session and a mode switch, and every IOKit
+  callback is registered with a NULL context, so no registration can outlive
+  what it points at. The crash report that identified it is in
+  `cwkeyer-2026-10-20-205052.ips`: `IOHIDDeviceInputElementValueCallback` ->
+  `CFSetApplyFunction` -> `watch_cb`, faulting on a freed context.
+
 - `--setup` now recognizes the HRS PaddleAdapter by name even though it
   advertises a full keyboard keyset, so it is treated as a paddle and
   defaults to exclusive grab.

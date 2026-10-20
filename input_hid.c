@@ -337,35 +337,59 @@ void input_backend_drain(const input_device_t *devices, size_t count)
     (void)count;
 }
 
-/* ---- waiting for a tap (the shared setup wizard) ---- */
+/* ---- one HID session: taps for the setup wizard, then the running keyer ---- */
 
-typedef struct {
-    size_t index;        /* index of the device this callback belongs to */
-    struct hid_wait *wait;
-} watch_t;
+/*
+ * IOKit keeps dispatching to a callback that was registered on a device, and
+ * IOHIDDeviceRegisterInputValueCallback(NULL) is not documented as an
+ * unregister.  A per-call context would therefore be read after the call that
+ * created it had returned, so every piece of state the callback touches lives
+ * here, for the life of the program, and a phase change is a mode switch
+ * rather than a registration.
+ */
+#define HID_MAX_WATCH 64
 
-typedef struct hid_wait {
-    size_t only;         /* SIZE_MAX for any device, else the exact index */
-    int want_release;    /* 0: next press, 1: release of this code */
-    int want_code;
+typedef enum {
+    HID_MODE_IDLE = 0,
+    HID_MODE_WAIT_PRESS,
+    HID_MODE_WAIT_RELEASE,
+    HID_MODE_RUN
+} hid_mode_t;
+
+static struct {
+    hid_mode_t mode;
+    int want_code;                        /* HID_MODE_WAIT_RELEASE */
+    size_t only;                          /* device index filter, or SIZE_MAX */
     int fired;
-    size_t which;
+    size_t which;                         /* index in the caller's array */
     int code;
-} hid_wait_t;
+    size_t ndev;
+    IOHIDDeviceRef dev[HID_MAX_WATCH];
+    size_t index[HID_MAX_WATCH];          /* caller's index for dev[] */
+    IOHIDOptionsType options[HID_MAX_WATCH];
+} hid;
 
-static void watch_cb(void *refcon, IOReturn result, void *sender, IOHIDValueRef value)
+static int hid_slot(void *sender)
 {
-    watch_t *w = refcon;
-    hid_wait_t *wait = w->wait;
+    for (size_t i = 0; i < hid.ndev; i++) {
+        if ((void *)hid.dev[i] == sender)
+            return (int)i;
+    }
+
+    return -1;
+}
+
+static void hid_input_cb(void *context, IOReturn result, void *sender,
+                         IOHIDValueRef value)
+{
     IOHIDElementRef el;
-    uint32_t usage;
     CFIndex v;
+    uint32_t usage;
+    int slot;
 
-    (void)sender;
+    (void)context;
 
-    if (result != kIOReturnSuccess || wait->fired)
-        return;
-    if (wait->only != SIZE_MAX && wait->only != w->index)
+    if (result != kIOReturnSuccess)
         return;
 
     el = IOHIDValueGetElement(value);
@@ -375,77 +399,107 @@ static void watch_cb(void *refcon, IOReturn result, void *sender, IOHIDValueRef 
     usage = IOHIDElementGetUsage(el);
     v = IOHIDValueGetIntegerValue(value);
 
-    if (wait->want_release) {
-        if (v == 0 && (int)usage == wait->want_code) {
-            wait->fired = 1;
-            wait->which = w->index;
-            wait->code = (int)usage;
+    /* HID reports 1 for press and 0 for release; there is no autorepeat. */
+    if (hid.mode == HID_MODE_RUN) {
+        if (v == 0 || v == 1)
+            set_key_state((int)usage, (int)v);
+        return;
+    }
+
+    if (hid.mode != HID_MODE_WAIT_PRESS && hid.mode != HID_MODE_WAIT_RELEASE)
+        return;
+    if (hid.fired)
+        return;
+
+    slot = hid_slot(sender);
+    if (slot < 0)
+        return;
+    if (hid.only != SIZE_MAX && hid.only != hid.index[slot])
+        return;
+
+    if (hid.mode == HID_MODE_WAIT_PRESS) {
+        if (v == 1) {
+            hid.fired = 1;
+            hid.which = hid.index[slot];
+            hid.code = (int)usage;
         }
         return;
     }
 
-    /* 1 = press.  HID reports no autorepeat; 2 does not occur. */
-    if (v == 1) {
-        wait->fired = 1;
-        wait->which = w->index;
-        wait->code = (int)usage;
+    if (v == 0 && (int)usage == hid.want_code) {
+        hid.fired = 1;
+        hid.which = hid.index[slot];
+        hid.code = (int)usage;
     }
+}
+
+static void hid_close_all(void)
+{
+    CFRunLoopRef loop = CFRunLoopGetCurrent();
+
+    hid.mode = HID_MODE_IDLE;
+
+    for (size_t i = 0; i < hid.ndev; i++) {
+        IOHIDDeviceUnscheduleFromRunLoop(hid.dev[i], loop, kCFRunLoopDefaultMode);
+        IOHIDDeviceRegisterInputValueCallback(hid.dev[i], NULL, NULL);
+        IOHIDDeviceClose(hid.dev[i], hid.options[i]);
+    }
+
+    hid.ndev = 0;
+}
+
+static int hid_open(const input_device_t *device, size_t caller_index,
+                    IOHIDOptionsType options)
+{
+    IOHIDDeviceRef dev = (IOHIDDeviceRef)device->handle;
+
+    if (hid.ndev >= HID_MAX_WATCH)
+        return -1;
+    if (IOHIDDeviceOpen(dev, options) != kIOReturnSuccess)
+        return -1;
+
+    IOHIDDeviceRegisterInputValueCallback(dev, hid_input_cb, NULL);
+    IOHIDDeviceScheduleWithRunLoop(dev, CFRunLoopGetCurrent(),
+                                   kCFRunLoopDefaultMode);
+
+    hid.dev[hid.ndev] = dev;
+    hid.index[hid.ndev] = caller_index;
+    hid.options[hid.ndev] = options;
+    hid.ndev++;
+    return 0;
 }
 
 static int wait_for(const input_device_t *devices, size_t count, size_t only,
                     int want_release, int want_code, int timeout_ms,
                     size_t *which, int *code)
 {
-    watch_t *watches;
-    hid_wait_t wait;
-    CFRunLoopRef loop;
-    size_t n = 0;
     int64_t deadline;
     int rc = -1;
 
     if (only != SIZE_MAX && only >= count)
         return -1;
 
-    watches = calloc(count ? count : 1, sizeof(*watches));
-    if (!watches)
-        return -1;
-
-    memset(&wait, 0, sizeof(wait));
-    wait.only = only;
-    wait.want_release = want_release;
-    wait.want_code = want_code;
-    wait.which = SIZE_MAX;
-
-    loop = CFRunLoopGetCurrent();
+    hid.fired = 0;
+    hid.which = SIZE_MAX;
+    hid.code = 0;
+    hid.only = only;
+    hid.want_code = want_code;
+    hid.mode = want_release ? HID_MODE_WAIT_RELEASE : HID_MODE_WAIT_PRESS;
 
     for (size_t i = 0; i < count; i++) {
-        IOHIDDeviceRef dev;
-
         if (!devices[i].readable || (only != SIZE_MAX && i != only))
             continue;
-
-        dev = (IOHIDDeviceRef)devices[i].handle;
-        watches[n].index = i;
-        watches[n].wait = &wait;
-
-        if (IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone) != kIOReturnSuccess)
-            continue;
-
-        IOHIDDeviceRegisterInputValueCallback(dev, watch_cb, &watches[n]);
-        IOHIDDeviceScheduleWithRunLoop(dev, loop, kCFRunLoopDefaultMode);
-        n++;
+        (void)hid_open(&devices[i], i, kIOHIDOptionsTypeNone);
     }
 
-    if (n == 0) {
-        free(watches);
+    if (hid.ndev == 0) {
+        hid.mode = HID_MODE_IDLE;
         return -1;
     }
 
     deadline = mono_ns() + (int64_t)timeout_ms * 1000000LL;
-    while (!wait.fired) {
-        int64_t remaining = deadline - mono_ns();
-
-        if (remaining <= 0) {
+    while (!hid.fired) {
+        if (deadline - mono_ns() <= 0) {
             rc = 0;
             break;
         }
@@ -456,21 +510,13 @@ static int wait_for(const input_device_t *devices, size_t count, size_t only,
         run_loop_briefly(0.05);
     }
 
-    if (wait.fired) {
-        *which = wait.which;
-        *code = wait.code;
+    if (hid.fired) {
+        *which = hid.which;
+        *code = hid.code;
         rc = 1;
     }
 
-    for (size_t i = 0; i < n; i++) {
-        IOHIDDeviceRef dev = (IOHIDDeviceRef)devices[watches[i].index].handle;
-
-        IOHIDDeviceUnscheduleFromRunLoop(dev, loop, kCFRunLoopDefaultMode);
-        IOHIDDeviceRegisterInputValueCallback(dev, NULL, NULL);
-        IOHIDDeviceClose(dev, kIOHIDOptionsTypeNone);
-    }
-
-    free(watches);
+    hid_close_all();
     return rc;
 }
 
@@ -498,32 +544,12 @@ static int device_gone;
 
 static void removal_cb(void *refcon, IOReturn result, void *sender)
 {
+    (void)refcon;
     (void)result;
     (void)sender;
-    (void)refcon;
 
     clear_input_state();
     device_gone = 1;
-}
-
-static void value_cb(void *refcon, IOReturn result, void *sender, IOHIDValueRef value)
-{
-    IOHIDElementRef el;
-    CFIndex v;
-
-    (void)refcon;
-    (void)sender;
-
-    if (result != kIOReturnSuccess)
-        return;
-
-    el = IOHIDValueGetElement(value);
-    if (!el || IOHIDElementGetUsagePage(el) != (uint32_t)kHIDPage_KeyboardOrKeypad)
-        return;
-
-    v = IOHIDValueGetIntegerValue(value);
-    if (v == 0 || v == 1)
-        set_key_state((int)IOHIDElementGetUsage(el), (int)v);
 }
 
 /* A lever already held when we start: read the element's current value, the
@@ -593,9 +619,9 @@ void *input_backend_thread(void *arg)
     const char *wanted = (const char *)arg;
     input_device_t *devices = NULL;
     size_t count = 0;
-    IOHIDDeviceRef dev = NULL;
-    CFRunLoopRef loop;
-    int seized = 0;
+    size_t slot = SIZE_MAX;
+    IOHIDDeviceRef dev;
+    IOHIDOptionsType options = kIOHIDOptionsTypeNone;
     int fatal = 0;
 
     if (input_backend_discover(&devices, &count) < 0) {
@@ -605,12 +631,12 @@ void *input_backend_thread(void *arg)
 
     for (size_t i = 0; i < count; i++) {
         if (strcmp(devices[i].id, wanted ? wanted : "") == 0) {
-            dev = (IOHIDDeviceRef)devices[i].handle;
+            slot = i;
             break;
         }
     }
 
-    if (!dev) {
+    if (slot == SIZE_MAX) {
         fprintf(stderr, "no input device with id '%s' is attached\n",
                 wanted ? wanted : "");
         fprintf(stderr, "run --list-devices to see what is available\n");
@@ -619,37 +645,42 @@ void *input_backend_thread(void *arg)
         return NULL;
     }
 
-    /* Seizing a keyboard needs root; when it is refused, keep listening
-     * non-exclusively so the levers still work. */
+    dev = (IOHIDDeviceRef)devices[slot].handle;
+
+    /*
+     * Seizing a keyboard needs root.  Try it when asked for and fall back to
+     * a normal open so the levers still work; the keys then also reach the
+     * foreground application.
+     */
     if (do_grab) {
-        if (IOHIDDeviceOpen(dev, kIOHIDOptionsTypeSeizeDevice) == kIOReturnSuccess) {
-            seized = 1;
-        } else {
+        if (hid_open(&devices[slot], slot, kIOHIDOptionsTypeSeizeDevice) < 0) {
             fprintf(stderr,
                     "warning: cannot take exclusive control of this device "
                     "(needs root on macOS);\n"
                     "         paddle presses will also reach the foreground "
                     "application\n");
-            if (IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone) != kIOReturnSuccess) {
-                fprintf(stderr, "cannot open input device '%s'\n", wanted);
-                input_backend_close_devices(devices, count);
-                request_stop(1);
-                return NULL;
-            }
+        } else {
+            options = kIOHIDOptionsTypeSeizeDevice;
         }
-    } else if (IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone) != kIOReturnSuccess) {
+    }
+
+    if (options == kIOHIDOptionsTypeNone &&
+        hid_open(&devices[slot], slot, kIOHIDOptionsTypeNone) < 0) {
         fprintf(stderr, "cannot open input device '%s'\n", wanted);
         input_backend_close_devices(devices, count);
         request_stop(1);
         return NULL;
     }
 
+    /* Only meaningful once the device is open: the value comes from its
+     * current report, like evdev's EVIOCGKEY. */
     initialize_from_device(dev);
-
-    loop = CFRunLoopGetCurrent();
-    IOHIDDeviceRegisterInputValueCallback(dev, value_cb, NULL);
     IOHIDDeviceRegisterRemovalCallback(dev, removal_cb, NULL);
-    IOHIDDeviceScheduleWithRunLoop(dev, loop, kCFRunLoopDefaultMode);
+
+    device_gone = 0;
+    hid.fired = 0;
+    hid.only = SIZE_MAX;
+    hid.mode = HID_MODE_RUN;
 
     while (keep_running()) {
         if (device_gone) {
@@ -660,12 +691,8 @@ void *input_backend_thread(void *arg)
         run_loop_briefly(0.1);
     }
 
-    IOHIDDeviceUnscheduleFromRunLoop(dev, loop, kCFRunLoopDefaultMode);
-    IOHIDDeviceRegisterInputValueCallback(dev, NULL, NULL);
     IOHIDDeviceRegisterRemovalCallback(dev, NULL, NULL);
-    IOHIDDeviceClose(dev, seized ? kIOHIDOptionsTypeSeizeDevice
-                                 : kIOHIDOptionsTypeNone);
-
+    hid_close_all();
     clear_input_state();
     input_backend_close_devices(devices, count);
 
@@ -674,6 +701,7 @@ void *input_backend_thread(void *arg)
 
     return NULL;
 }
+
 
 /* ---- signalling and help text ---- */
 
