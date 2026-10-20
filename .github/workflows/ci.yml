@@ -85,3 +85,38 @@ jobs:
         with:
           name: coverage
           path: coverage/
+
+  macos:
+    # Pinned like the Linux runners so the toolchain does not move underneath
+    # us. macOS ships clang as cc; the Makefile asks the compiler which warning
+    # set to use, so the strict build works there unchanged.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Toolchain
+        run: |
+          cc --version
+          command -v shellcheck || brew install shellcheck
+
+      - name: Build (strict)
+        run: make clean && make
+
+      - name: Test
+        run: make test
+
+      - name: Differential test against third-party keyers
+        run: make test-differential
+
+      # AddressSanitizer's leak checker is not available on Darwin and aborts
+      # if asked for, so unlike the Linux job this one only asks for stack
+      # traces.
+      - name: Sanitizers
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: |
+          make clean
+          make test CFLAGS='-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer'
+
+      - name: Lint scripts
+        run: shellcheck cw-mic-mix.sh tests/test_mic_mix.sh

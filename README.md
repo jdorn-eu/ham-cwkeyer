@@ -83,7 +83,7 @@ A live paddle/listening check is still useful after changing timing, debouncing,
 
 `make coverage` (requires `gcovr`) runs the C suites with `--coverage` and writes an HTML report to `coverage/index.html` plus a Cobertura `coverage/coverage.xml`. Coverage is reported for `cwkeyer.c` and the Linux backends and sits around 70%; the remainder is mostly error paths that are hard to trigger (thread-creation failure, ALSA recovery, evdev read errors) and the usage text, so treat it as a map of what to test next rather than a target.
 
-CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict GCC build, `make test`, `make analyze`, and `shellcheck`; a clang build and test; a sanitizer job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer; and a coverage job that uploads the report as an artifact.
+CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict GCC build, `make test`, `make analyze`, and `shellcheck`; a clang build and test; a sanitizer job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer; and a coverage job that uploads the report as an artifact. A macOS job builds and runs the portable and Darwin suites, the differential test, and the sanitizers; it cannot ask for AddressSanitizer's leak checker, which Darwin does not provide.
 
 ## License
 

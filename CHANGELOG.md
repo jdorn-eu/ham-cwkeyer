@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clock_nanosleep()`.
 - The Makefile detects clang by asking the compiler rather than by looking at
   `$(CC)`, because `cc` is clang on macOS, and picks the Darwin frameworks.
+- CI builds and tests macOS as well as Linux.
 - Split the single source file into a portable core (`cwkeyer.c`) and a pair
   of Linux backends (`input_evdev.c`, `audio_alsa.c`), joined at the end of
   `cwkeyer.c` and described by `platform.h`. The core no longer includes

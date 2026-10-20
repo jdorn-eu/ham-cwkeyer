@@ -162,29 +162,37 @@ static void test_dropout_detection(void)
     expect(ca_gaps == 1, "a gap in the sample timeline was not counted");
 }
 
+/* AudioBufferList declares room for one buffer; a two-buffer list needs a
+ * struct that actually has the space, not an index past the end. */
+typedef struct {
+    AudioBufferList list;
+    AudioBuffer extra;
+} two_buffer_list_t;
+
 static void test_odd_buffer_lists(void)
 {
     int16_t a[64];
     int16_t b[64];
+    two_buffer_list_t two;
     AudioBufferList list;
     AudioTimeStamp ts;
 
     reset_audio();
 
     /* More than one buffer is unexpected; refuse it without writing. */
-    memset(&list, 0, sizeof(list));
-    list.mNumberBuffers = 2;
-    list.mBuffers[0].mNumberChannels = 1;
-    list.mBuffers[0].mDataByteSize = sizeof(a);
-    list.mBuffers[0].mData = a;
-    list.mBuffers[1].mNumberChannels = 1;
-    list.mBuffers[1].mDataByteSize = sizeof(b);
-    list.mBuffers[1].mData = b;
+    memset(&two, 0, sizeof(two));
+    two.list.mNumberBuffers = 2;
+    two.list.mBuffers[0].mNumberChannels = 1;
+    two.list.mBuffers[0].mDataByteSize = sizeof(a);
+    two.list.mBuffers[0].mData = a;
+    two.extra.mNumberChannels = 1;
+    two.extra.mDataByteSize = sizeof(b);
+    two.extra.mData = b;
 
     memset(a, 0x5a, sizeof(a));
     memset(b, 0x5a, sizeof(b));
     make_time(&ts, 0);
-    expect(ca_render(NULL, NULL, &ts, 0, 64, &list) == noErr,
+    expect(ca_render(NULL, NULL, &ts, 0, 64, &two.list) == noErr,
            "an odd buffer list returned an error");
 
     int touched = 0;
