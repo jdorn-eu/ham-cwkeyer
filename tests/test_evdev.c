@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * evdev_thread() tests. A FIFO stands in for the input device: the thread's
- * capability ioctls fail harmlessly, but its poll/read loop and the
+ * input_backend_thread() tests. A FIFO stands in for the input device: the
+ * thread's capability ioctls fail harmlessly, but its poll/read loop and the
  * resulting paddle state are exercised for real.
  */
 int cwkeyer_program_main(int argc, char **argv);
@@ -62,7 +62,7 @@ int main(void)
     }
 
     pthread_t tid;
-    if (pthread_create(&tid, NULL, evdev_thread, path) != 0) {
+    if (pthread_create(&tid, NULL, input_backend_thread, path) != 0) {
         fprintf(stderr, "evdev: pthread_create failed\n");
         return 1;
     }

@@ -28,6 +28,33 @@ The mark queue is bounded. If audio falls far enough behind to fill it, the prog
 
 Audio health is reported at exit: ALSA underruns are counted (and the first few logged as they happen), and the keyer counts elements that started more than 1 ms later than their nominal mark + space. If either is non-zero, a summary line with the count and the worst delay is printed when the keyer stops; a clean run stays silent.
 
+## Source layout
+
+The program is one translation unit, split into a portable core and a pair
+of platform backends:
+
+```
+cwkeyer.c          portable core: iambic keyer, RC filter, weighting,
+                   decoder, PCM renderer, terminal handling, arguments, main
+platform.h         the backend contract
+platform_linux.h   CWKEY_* key codes for Linux
+input_evdev.c      Linux input: /dev/input discovery, grab, setup wizard
+audio_alsa.c       Linux output: ALSA, default PCM "pulse"
+```
+
+`cwkeyer.c` ends with an `#include` of the backend pair for the target, so a
+backend sees every core static and needs no exported API of its own. The
+whole contract is declared in `platform.h`: `audio_backend_open/run/close`
+and `input_backend_thread/suspend/resume/grab_description/list/setup`. The
+keyer core, the RC filter, the weighting, the decoder, and the renderer
+never name a platform API; keys are named through the portable `CWKEY_*`
+namespace, which each platform supplies.
+
+The backends are included rather than linked so the test suites can keep
+including `cwkeyer.c` and reaching into internals directly. Porting means
+adding `platform_<os>.h`, `input_<os>.c`, and `audio_<os>.c`, plus one branch
+at the end of `cwkeyer.c` and one in `platform.h`.
+
 ## Tests
 
 The build is deliberately strict by default: `-Werror` plus a broad warning set (including `-Wconversion`, `-Wsign-conversion`, `-Wshadow`, `-Wcast-qual`, and `-Wdouble-promotion`). Both GCC and clang are supported; the Makefile adapts the warning flags to the compiler (`make CC=clang`). Pass `make WERROR=` to build despite warnings on an unknown toolchain. `make analyze` runs GCC's `-fanalyzer`.
@@ -37,7 +64,7 @@ The build is deliberately strict by default: `-Werror` plus a broad warning set 
 - `tests/test_keyer.c` — the type B iambic core (held-paddle repeats, alternating squeezes, the N/A memory cases, and the `C` extra-element rule), the RC paddle filter (glitches rejected, bounce smoothed, threshold delay), evdev event parsing (press/release, autorepeat ignored, `SYN_DROPPED` resync), the decode display (character and word gaps, unknown symbols dropped), the PCM renderer (envelope, spacing across buffer boundaries, late marks, high-speed ramp, level scaling), and a short run of the real `keyer_thread` to check mark sequencing.
 - `tests/test_signals.c` — `SIGPIPE` ignored, a stop signal stops the loops, terminal disable/restore is idempotent on a pty, queued tty input is discarded on restore, a spurious `SIGCONT` does not re-disable echo, and `SIGTSTP`/`SIGCONT` genuinely stop and resume through the signal-waiting thread.
 - `tests/test_audio.c` — the audio layer against ALSA's built-in `null` PCM (no sound server or hardware): `open_audio()` opens and negotiates a rate, `pcm_write_all()` writes generated periods, `audio_loop()` runs in a thread and stops cleanly, and a missing device and an at-Nyquist tone are both rejected.
-- `tests/test_evdev.c` — `evdev_thread()` fed through a FIFO standing in for the input device: press/release update the paddle state, the press edge is latched, and state is cleared on exit.
+- `tests/test_evdev.c` — `input_backend_thread()` fed through a FIFO standing in for the input device: press/release update the paddle state, the press edge is latched, and state is cleared on exit.
 - `tests/test_mic_mix.sh` — `cw-mic-mix.sh` against a mocked `pactl`: setup, idempotent reruns, `--unload`, rollback on a failed module load, and argument validation.
 
 The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `lookup_key`), input-device classification for `--list-devices`, paddle tap detection, setup prompts, runtime control keys, and a real `main()` startup/failure/shutdown path.
@@ -48,7 +75,7 @@ There is also an optional differential test against the real UnixCW libcw keyer:
 
 A live paddle/listening check is still useful after changing timing, debouncing, or ALSA settings.
 
-`make coverage` (requires `gcovr`) runs the C suites with `--coverage` and writes an HTML report to `coverage/index.html` plus a Cobertura `coverage/coverage.xml`. Coverage is reported for `cwkeyer.c` only and sits around 78%; the remainder is mostly error paths that are hard to trigger (thread-creation failure, ALSA recovery, evdev read errors) and the usage text, so treat it as a map of what to test next rather than a target.
+`make coverage` (requires `gcovr`) runs the C suites with `--coverage` and writes an HTML report to `coverage/index.html` plus a Cobertura `coverage/coverage.xml`. Coverage is reported for `cwkeyer.c` and the Linux backends and sits around 70%; the remainder is mostly error paths that are hard to trigger (thread-creation failure, ALSA recovery, evdev read errors) and the usage text, so treat it as a map of what to test next rather than a target.
 
 CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict GCC build, `make test`, `make analyze`, and `shellcheck`; a clang build and test; a sanitizer job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer; and a coverage job that uploads the report as an artifact.
 

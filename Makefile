@@ -57,7 +57,19 @@ CTESTS = test_keyer test_signals test_audio test_evdev
 
 .PHONY: test test-differential analyze coverage test-libcw install uninstall dist clean
 
-cwkeyer: cwkeyer.c
+# Tests include cwkeyer.c, which is a unity build: the portable core plus
+# the backend named here.  List the backends so a backend edit triggers a
+# rebuild.
+LINUX_SRCS  = platform.h platform_linux.h input_evdev.c audio_alsa.c
+DARWIN_SRCS = platform.h platform_macos.h input_hid.c audio_coreaudio.c
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+PLATFORM_SRCS = $(DARWIN_SRCS)
+else
+PLATFORM_SRCS = $(LINUX_SRCS)
+endif
+
+cwkeyer: cwkeyer.c $(PLATFORM_SRCS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -o $@ $< $(LDLIBS)
 
 test:
@@ -108,7 +120,8 @@ coverage:
 	    $(CC) --coverage -o coverage/$$t coverage/$$t.o $(LDLIBS) || exit 1; \
 	    ./coverage/$$t || exit 1; \
 	done
-	gcovr --root . --filter 'cwkeyer\.c' --txt --cobertura coverage/coverage.xml \
+	gcovr --root . --filter '(cwkeyer|input_evdev|audio_alsa)\.c' --txt \
+	    --cobertura coverage/coverage.xml \
 	    --html-details coverage/index.html
 	@echo "coverage report: coverage/index.html"
 

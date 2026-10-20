@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Split the single source file into a portable core (`cwkeyer.c`) and a pair
+  of Linux backends (`input_evdev.c`, `audio_alsa.c`), joined at the end of
+  `cwkeyer.c` and described by `platform.h`. The core no longer includes
+  `linux/input.h` or `alsa/asoundlib.h`, and names keys through the
+  portable `CWKEY_*` namespace. Behaviour, messages, and timing are
+  unchanged; this is groundwork for a macOS backend. Internal entry points
+  were renamed accordingly: `evdev_thread` is now `input_backend_thread`,
+  `run_setup_wizard` is `input_backend_setup`, `list_input_devices` is
+  `input_backend_list`, and the audio loop is reached through
+  `audio_backend_open/run/close`.
+
 ### Added
 
 - Known paddle adapters are recognized by USB vendor/product ID, starting
