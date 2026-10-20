@@ -16,6 +16,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routing the tone to a virtual device and monitoring locally. The sidetone
   crosses a ring like the microphone does, so the two units can run on their
   own clocks.
+- macOS support: `input_hid.c` and `audio_coreaudio.c` implement the backend
+  contract with IOKit HID and CoreAudio. A paddle adapter is a plain USB HID
+  keyboard there, so no driver is needed and the default
+  LEFTCTRL/RIGHTCTRL paddle mapping is unchanged. `--list-devices` and
+  `--setup` work as on Linux; devices are named `vendor:product:location`.
+  Exclusive access uses `kIOHIDOptionsTypeSeizeDevice` and needs root, so
+  losing it is a warning rather than an error; reading keyboard HID values
+  needs the Input Monitoring permission. Audio goes through a HALOutput
+  AudioUnit whose render callback feeds the same `generate_audio()`, at the
+  device buffer size (512 frames, 10.7 ms on the built-in speakers) with
+  about 12 ms measured output latency. A dropout is detected from a jump in
+  the unit's sample timeline and counted like an ALSA underrun.
+- Known paddle adapters are recognized by USB vendor/product ID, starting
+  with the HRS PaddleAdapter. The table in `cwkeyer.c` stores the default
+  dot/dash key codes and is a one-line addition per device. A single known
+  adapter skips the tap test and uses those codes; `--list-devices` shows
+  the known label.
+- `--setup`: interactively choose the paddle device by tapping the dot and
+  dash levers, which also learns both key codes. Starts with the default
+  speed, pitch, level, and weighting. A keyboard-like device defaults to
+  `nograb`; a paddle defaults to exclusive grab. If both taps use the same
+  key, the wizard offers straight-key mode.
+- `--list-devices` (`-L`): list readable `/dev/input/event*` devices with a
+  keyboard/paddle guess and a note when the default LEFTCTRL/RIGHTCTRL
+  paddle keys are reported. Devices are grouped (unknown, keyboard, paddle)
+  and sorted by event number within each group; the group names are colored
+  on a terminal unless `NO_COLOR` is set. The guess is a hint for humans,
+  not a device selection policy.
+- `mix-mic` on macOS: the microphone is captured by a second audio unit and
+  summed with the sidetone in the render callback, so one output device (for
+  example BlackHole) carries both and a voice application can take the
+  operator and the sidetone from a single input. `CW_AUDIO_DEVICE` says where
+  the mix goes and `CW_MIX_MIC_DEVICE` which microphone to capture. The two
+  units run on their own clocks, so captured samples cross a ring buffer:
+  overflow drops the oldest, and a dry ring holds the last sample rather than
+  stepping to zero. Missing microphone, missing permission or a refused seek
+  all fall back to an ordinary sidetone with a warning. On Linux `mix-mic` is
+  refused with a pointer to `cw-mic-mix.sh`.
 
 ### Changed
 
@@ -26,7 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The first render-callback transition is no longer reported as a dropout. A
   unit that has just started can re-anchor its sample timeline while it
   settles, which is not audio anyone could have heard.
-
 - The command line is more forgiving about order and more direct about
   mistakes: options and keywords may appear anywhere, and `--setup` can be
   combined with the settings it should start with (`--setup 25 700 mix-mic`
@@ -35,7 +72,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of the whole usage text, an argument starting with `-` is reported
   as an unknown option rather than being taken for a device path, and
   `--help` is written to standard output so it can be piped or paged.
-
 - `--setup` and `--list-devices` now live in the portable core and are built
   on five backend primitives (`discover`, `close_devices`, `drain`,
   `wait_press`, `wait_release`), so the two platforms share one wizard and
@@ -70,89 +106,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `run_setup_wizard` is `input_backend_setup`, `list_input_devices` is
   `input_backend_list`, and the audio loop is reached through
   `audio_backend_open/run/close`.
-
-### Added
-
-- macOS support: `input_hid.c` and `audio_coreaudio.c` implement the backend
-  contract with IOKit HID and CoreAudio. A paddle adapter is a plain USB HID
-  keyboard there, so no driver is needed and the default
-  LEFTCTRL/RIGHTCTRL paddle mapping is unchanged. `--list-devices` and
-  `--setup` work as on Linux; devices are named `vendor:product:location`.
-  Exclusive access uses `kIOHIDOptionsTypeSeizeDevice` and needs root, so
-  losing it is a warning rather than an error; reading keyboard HID values
-  needs the Input Monitoring permission. Audio goes through a HALOutput
-  AudioUnit whose render callback feeds the same `generate_audio()`, at the
-  device buffer size (512 frames, 10.7 ms on the built-in speakers) with
-  about 12 ms measured output latency. A dropout is detected from a jump in
-  the unit's sample timeline and counted like an ALSA underrun.
-- Known paddle adapters are recognized by USB vendor/product ID, starting
-  with the HRS PaddleAdapter. The table in `cwkeyer.c` stores the default
-  dot/dash key codes and is a one-line addition per device. A single known
-  adapter skips the tap test and uses those codes; `--list-devices` shows
-  the known label.
-- `--setup`: interactively choose the paddle device by tapping the dot and
-  dash levers, which also learns both key codes. Starts with the default
-  speed, pitch, level, and weighting. A keyboard-like device defaults to
-  `nograb`; a paddle defaults to exclusive grab. If both taps use the same
-  key, the wizard offers straight-key mode.
-- `--list-devices` (`-L`): list readable `/dev/input/event*` devices with a
-  keyboard/paddle guess and a note when the default LEFTCTRL/RIGHTCTRL
-  paddle keys are reported. Devices are grouped (unknown, keyboard, paddle)
-  and sorted by event number within each group; the group names are colored
-  on a terminal unless `NO_COLOR` is set. The guess is a hint for humans,
-  not a device selection policy.
-
-### Added
-
-- `mix-mic` on macOS: the microphone is captured by a second audio unit and
-  summed with the sidetone in the render callback, so one output device (for
-  example BlackHole) carries both and a voice application can take the
-  operator and the sidetone from a single input. `CW_AUDIO_DEVICE` says where
-  the mix goes and `CW_MIX_MIC_DEVICE` which microphone to capture. The two
-  units run on their own clocks, so captured samples cross a ring buffer:
-  overflow drops the oldest, and a dry ring holds the last sample rather than
-  stepping to zero. Missing microphone, missing permission or a refused seek
-  all fall back to an ordinary sidetone with a warning. On Linux `mix-mic` is
-  refused with a pointer to `cw-mic-mix.sh`.
-
-### Fixed
-
-- Two defects on the macOS default-output path, found by running it: the
-  playback unit asked for `kAudioOutputUnitProperty_EnableIO`, which
-  `DefaultOutput` does not have, so every run without `CW_AUDIO_DEVICE`
-  printed `warning: cannot enable audio output: -10879`. An output unit is
-  output-only by default, so the call was both unnecessary and wrong for that
-  subtype; only the capture unit enables anything. And the presentation-delay
-  statistics counted the first callback after a `SIGTSTP`/`SIGCONT`, whose
-  host time predates the stop, which reported a minimum latency of -1006 ms
-  for a session of ordinary 12 ms latency. Implausible leads are now ignored.
-
-- macOS crash (SIGBUS/SIGSEGV) on some runs: the setup wizard's HID input
-  callback was registered with a pointer to a stack frame that had already
-  returned, and `IOHIDDeviceRegisterInputValueCallback(NULL)` is not a
-  documented unregister, so IOKit kept dispatching to it. The keyer's own
-  thread shares the device, so the next key press called a callback whose
-  context was freed. The backend now uses one callback for both phases with
-  all of its state in a static session and a mode switch, and every IOKit
-  callback is registered with a NULL context, so no registration can outlive
-  what it points at. The crash report that identified it is in
-  `cwkeyer-2026-10-20-205052.ips`: `IOHIDDeviceInputElementValueCallback` ->
-  `CFSetApplyFunction` -> `watch_cb`, faulting on a freed context.
-
-- `--setup` now recognizes the HRS PaddleAdapter by name even though it
-  advertises a full keyboard keyset, so it is treated as a paddle and
-  defaults to exclusive grab.
-- `--setup` waits for the DOT lever to be released before accepting the DASH
-  tap, so a held lever or its repeat events cannot be mistaken for the
-  second lever.
-- `--setup` no longer reports the tap timeout immediately because another
-  input device (for example a mouse) had a pending non-key event. The wait
-  now keeps polling until the deadline or a real key press.
-- `--setup` ignores pointer and gamepad buttons (`BTN_*` codes), so a
-  stray mouse click cannot be mistaken for a paddle tap.
-
-### Changed
-
 - Runtime control feedback is rewritten on a single status line on a
   terminal instead of appending a new line for every change.
 - `cwkeyer` with no arguments on an interactive terminal now runs the same
@@ -166,6 +119,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Two defects on the macOS default-output path, found by running it: the
+  playback unit asked for `kAudioOutputUnitProperty_EnableIO`, which
+  `DefaultOutput` does not have, so every run without `CW_AUDIO_DEVICE`
+  printed `warning: cannot enable audio output: -10879`. An output unit is
+  output-only by default, so the call was both unnecessary and wrong for that
+  subtype; only the capture unit enables anything. And the presentation-delay
+  statistics counted the first callback after a `SIGTSTP`/`SIGCONT`, whose
+  host time predates the stop, which reported a minimum latency of -1006 ms
+  for a session of ordinary 12 ms latency. Implausible leads are now ignored.
+- macOS crash (SIGBUS/SIGSEGV) on some runs: the setup wizard's HID input
+  callback was registered with a pointer to a stack frame that had already
+  returned, and `IOHIDDeviceRegisterInputValueCallback(NULL)` is not a
+  documented unregister, so IOKit kept dispatching to it. The keyer's own
+  thread shares the device, so the next key press called a callback whose
+  context was freed. The backend now uses one callback for both phases with
+  all of its state in a static session and a mode switch, and every IOKit
+  callback is registered with a NULL context, so no registration can outlive
+  what it points at. The crash report that identified it is in
+  `cwkeyer-2026-10-20-205052.ips`: `IOHIDDeviceInputElementValueCallback` ->
+  `CFSetApplyFunction` -> `watch_cb`, faulting on a freed context.
+- `--setup` now recognizes the HRS PaddleAdapter by name even though it
+  advertises a full keyboard keyset, so it is treated as a paddle and
+  defaults to exclusive grab.
+- `--setup` waits for the DOT lever to be released before accepting the DASH
+  tap, so a held lever or its repeat events cannot be mistaken for the
+  second lever.
+- `--setup` no longer reports the tap timeout immediately because another
+  input device (for example a mouse) had a pending non-key event. The wait
+  now keeps polling until the deadline or a real key press.
+- `--setup` ignores pointer and gamepad buttons (`BTN_*` codes), so a
+  stray mouse click cannot be mistaken for a paddle tap.
 - Consume pending runtime controls from a pipe before reacting to a
   simultaneous `POLLHUP` when its writer closes.
 - Route ordinary stop, suspend, and resume signals through a `sigwait()`

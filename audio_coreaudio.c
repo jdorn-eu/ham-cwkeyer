@@ -39,10 +39,10 @@
 
 #include "platform.h"
 
-/* Device selection: CW_AUDIO_DEVICE names a device or UID ("default" for the
- * system output).  CW_AUDIO_LATENCY_FRAMES caps nothing in CoreAudio, so the
- * only latency control is the device buffer, which is shared; we leave it
- * alone and report what we got. */
+/* Device selection: CW_AUDIO_DEVICE names a device or UID, and "default"
+ * follows the system output.  The only latency control CoreAudio offers is the
+ * device buffer, which is shared with every other application, so it is left
+ * alone; the buffer size and the measured output delay are reported instead. */
 
 static AudioUnit ca_unit;
 static unsigned int ca_rate;

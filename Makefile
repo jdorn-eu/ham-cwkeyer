@@ -134,8 +134,12 @@ test-libcw:
 	./test_differential_libcw
 	rm -f test_differential_libcw
 
-# Code coverage (needs gcovr). Writes coverage/index.html and coverage.xml.
+# Code coverage (needs gcovr and gcov). Writes coverage/index.html and .xml.
 coverage:
+ifeq ($(IS_CLANG),1)
+	@echo "coverage: gcovr needs a GCC build; run \`make CC=gcc coverage\`" >&2
+	@exit 1
+endif
 	@rm -rf coverage
 	@mkdir -p coverage
 	@for t in $(CTESTS); do \

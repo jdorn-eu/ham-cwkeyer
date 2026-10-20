@@ -328,7 +328,7 @@ static void test_mix_block(void)
     mix_block(quiet, sig, 0); /* no-op must not fault */
 }
 
-static void test_mix_ring(void)
+static void test_ring(void)
 {
     int16_t in[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     int16_t out[8];
@@ -417,15 +417,74 @@ static void test_mix_in_render(void)
     mix_mic_mode = 0;
 }
 
+/* The monitor output plays the sidetone copy that ca_render left behind. */
+static void test_monitor_render(void)
+{
+    int16_t out[16];
+    int16_t in[8] = {11, 22, 33, 44, 55, 66, 77, 88};
+    AudioBufferList list;
+    AudioTimeStamp ts;
+
+    reset_audio();
+    reset_mix();
+    make_time(&ts, 0);
+
+    ring_put(&monitor_ring, in, 8);
+    make_list(&list, out, 8);
+    expect(monitor_render(NULL, NULL, &ts, 0, 8, &list) == noErr,
+           "the monitor returned an error");
+    for (int i = 0; i < 8; i++)
+        expect(out[i] == in[i], "the monitor did not copy the sidetone");
+
+    /* A dry ring holds the last sample rather than going silent. */
+    memset(out, 0, sizeof(out));
+    make_list(&list, out, 4);
+    expect(monitor_render(NULL, NULL, &ts, 0, 4, &list) == noErr,
+           "the monitor returned an error on a dry ring");
+    expect(out[0] == 88 && out[3] == 88,
+           "a dry monitor ring did not hold its last sample");
+
+    /* Both channels of a device get the same mono signal. */
+    {
+        int16_t stereo[16];
+
+        reset_mix();
+        memset(&list, 0, sizeof(list));
+        list.mNumberBuffers = 1;
+        list.mBuffers[0].mNumberChannels = 2;
+        list.mBuffers[0].mDataByteSize = 8 * 2 * 2;
+        list.mBuffers[0].mData = stereo;
+
+        ring_put(&monitor_ring, in, 8);
+        expect(monitor_render(NULL, NULL, &ts, 0, 8, &list) == noErr,
+               "the monitor returned an error for a stereo device");
+        for (int i = 0; i < 8; i++)
+            expect(stereo[2 * i] == in[i] && stereo[2 * i + 1] == in[i],
+                   "the monitor did not fill both channels");
+    }
+
+    /* An unexpected buffer list must not be written to. */
+    reset_mix();
+    ring_put(&monitor_ring, in, 8);
+    memset(&list, 0, sizeof(list));
+    list.mNumberBuffers = 1;
+    list.mBuffers[0].mNumberChannels = 1;
+    list.mBuffers[0].mDataByteSize = 16;
+    list.mBuffers[0].mData = NULL;
+    expect(monitor_render(NULL, NULL, &ts, 0, 8, &list) == noErr,
+           "the monitor returned an error for a null buffer");
+}
+
 int main(void)
 {
     test_mix_block();
-    test_mix_ring();
+    test_ring();
     test_mix_in_render();
     test_silence_and_level();
     test_mark_ends();
     test_dropout_detection();
     test_latency_filter();
+    test_monitor_render();
     test_odd_buffer_lists();
 
     if (failures == 0)
