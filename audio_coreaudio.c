@@ -1145,12 +1145,14 @@ int audio_backend_run(void)
 
 void audio_backend_suspend(void)
 {
+    /* Set before SIGSTOP, so the first callback after SIGCONT cannot slip in
+     * before the signal thread runs again. */
+    atomic_store_explicit(&ca_reanchor, 1, memory_order_relaxed);
 }
 
 void audio_backend_resume(void)
 {
-    /* The unit stopped rendering while the process was stopped; the first
-     * callback after SIGCONT has a new timeline, not a lost buffer. */
+    /* Belt and braces if the process did not actually stop. */
     atomic_store_explicit(&ca_reanchor, 1, memory_order_relaxed);
 }
 

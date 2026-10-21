@@ -48,11 +48,13 @@ input_evdev.c      Linux input: /dev/input discovery, grab, primitive waits
 audio_alsa.c       Linux output: ALSA, default PCM "pulse"
 input_hid.c        macOS input: IOHID keyboards, seize, primitive waits
 audio_coreaudio.c  macOS output: CoreAudio HALOutput render callback
+contrib/macos/     optional cwkeyer.app bundle (stable TCC identity)
 ```
 
 `cwkeyer.c` ends with an `#include` of the backend pair for the target, so a
 backend sees every core static and needs no exported API of its own. The
 whole contract is declared in `platform.h`: `audio_backend_open/run/close`,
+`audio_backend_list/suspend/resume`,
 `input_backend_thread/suspend/resume/grab_description`, and the primitives
 (`discover`, `close_devices`, `drain`, `wait_press`, `wait_release`) that the
 shared `--list-devices` listing and `--setup` wizard are built on, so neither
@@ -165,7 +167,8 @@ Three things differ from Linux, all of them forced by the platform:
   ```
   The bundle is an agent (no Dock icon), ad-hoc signed and not notarized, and
   writes its diagnostics to the system log; run `--setup` and
-  `--list-devices` from a terminal first.
+  `--list-devices` from a terminal first. Rebuilding the bundle can change
+  its code identity, so macOS may ask for the permissions again.
 - **Latency is the device buffer.** CoreAudio asks for one device buffer per
   render callback (512 frames, 10.7 ms on the built-in speakers) and the
   measured output latency is about 12 ms. The client format uses the output

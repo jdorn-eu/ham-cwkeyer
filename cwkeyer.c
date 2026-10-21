@@ -232,8 +232,12 @@ static void *signal_thread(void *arg)
                 /* SIGSTOP suspends all threads; SIGCONT will be consumed here
                  * after the process resumes. Do not suspend if shutdown won
                  * the race while we were restoring the terminal. */
-                if (!ALOAD(shutdown_wanted) && keep_running())
+                if (!ALOAD(shutdown_wanted) && keep_running()) {
+                    /* The keyer thread may resume before this one does; arm
+                     * the re-anchor before the stop, not after it. */
+                    ASTORE(keyer_reanchor, 1);
                     (void)kill(getpid(), SIGSTOP);
+                }
             }
             break;
         case SIGCONT:
