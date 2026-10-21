@@ -134,8 +134,9 @@ Three things differ from Linux, all of them forced by the platform:
   under System Settings → Privacy & Security → Input Monitoring.
 - **Exclusive access needs root.** `kIOHIDOptionsTypeSeizeDevice` stands in
   for `EVIOCGRAB`, and is refused for keyboards unless the process is root,
-  so `--setup` defaults to `nograb` unless you are root and the keyer falls
-  back with a warning if a seize fails. Without it the levers also reach the
+  so the keyer defaults to `nograb` when exclusive access is not possible (a
+  normal user); `--setup` offers the same default. An explicit attempt that
+  fails falls back with a warning. Without it the levers also reach the
   foreground application, which is harmless for a dedicated adapter and noisy
   on a normal keyboard.
 - **Latency is the device buffer.** CoreAudio asks for one device buffer per

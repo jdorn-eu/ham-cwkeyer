@@ -1584,7 +1584,7 @@ static void reset_cli_state(void)
 {
     wpm = 12.0;
     freq_hz = 800.0;
-    do_grab = 1;
+    do_grab = -1;
     do_decode = 0;
     straight_mode = 0;
     mix_mic_mode = 0;

@@ -79,7 +79,9 @@ static unsigned int audio_rate = AUDIO_RATE;
 
 static int dit_code = CWKEY_LEFTCTRL;
 static int dah_code = CWKEY_RIGHTCTRL;
-static int do_grab = 1;
+/* -1 means "not chosen on the command line"; it is resolved against the
+ * backend's capability before the keyer starts. */
+static int do_grab = -1;
 static int do_decode = 0;
 
 /*
@@ -2163,6 +2165,15 @@ int main(int argc, char **argv)
         usage(stderr, prog);
         return 1;
     }
+
+    /*
+     * A backend that cannot take exclusive control as this user should not be
+     * asked for it on every run: --setup already defaults to nograb there,
+     * and a direct invocation should behave the same way.  An explicit
+     * "nograb" still wins, and --setup always sets an explicit answer.
+     */
+    if (do_grab < 0)
+        do_grab = input_backend_grab_possible();
 
     if (dit_code == dah_code && !straight_mode) {
         fprintf(stderr, "dit_key and dah_key must be different\n");

@@ -70,9 +70,10 @@ and your own key names.
 Reading keyboard input needs the Input Monitoring permission, which macOS
 attributes to the terminal that launched the keyer. Taking exclusive control
 stands in for evdev's grab and is refused for keyboards unless the process is
-root, so the setup wizard offers
+root, so the keyer defaults to
 .B nograb
-by default and the keyer warns and falls back if a seize fails. Without it the
+when exclusive access is not possible, and the setup wizard offers the same
+default. An explicit attempt that fails warns and falls back. Without it the
 levers also reach the foreground application. The
 .B CW_ALSA_DEVICE
 and
