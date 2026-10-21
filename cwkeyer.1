@@ -236,10 +236,12 @@ Linux only. PulseAudio/PipeWire sink for the sidetone. If
 .B CW_ALSA_DEVICE
 is
 .B pulse
-and this is unset or empty, it defaults to
+and this is unset or empty, the keyer tries
 .BR cw_out ,
 the combined sink created by
 .BR cw-mic-mix (1).
+If that sink is unavailable it falls back to the system default sink with a
+warning, so a bare run still plays.
 .TP
 .B CW_MIX_MONITOR
 macOS only. Output device on which to play the sidetone alone, so the operator

@@ -242,12 +242,12 @@ If stdin is a readable terminal or pipe, the keyer accepts single-key controls w
 A pipe's final controls are read even if its writer has already closed. Speed, pitch, level, and weighting changes take effect on the next element. On a terminal, the current settings are shown on a single status line that is rewritten in place rather than appended line by line. The startup values come from the command line, `CW_KEYER_LEVEL`, and the usual environment variables. These control keys are read from stdin, not from the evdev paddle device, so avoid remapping a paddle to one of them.
 
 ## Environment
-- `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is set to `cw_out` by the keyer.
+- `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is tried as `cw_out`, falling back to the system default sink if that one is unavailable.
 - `CW_ALSA_LATENCY_US` Requested ALSA latency in microseconds. Default: `20000` (20 ms). ALSA may negotiate a different buffer/period; the achieved values are printed at startup. Smaller buffers may reduce latency but increase underrun risk.
 - `CW_KEYER_LEVEL` Sidetone level, percent of full scale, `0`–`100`. Default: `70`. The level can also be changed while running with `9` and `0`.
 - `CW_KEYER_WEIGHT_MS` Weighting, `-25`–`25` ms. Default: `0` (strict ITU timing). A constant time added to each mark and removed from the following space. The weighting can also be changed while running with `,` and `.`.
 - `CW_KEYER_DEBOUNCE_MS` Paddle RC filter time constant in milliseconds, `0`–`50`. Default: `10`; `0` disables the filter. The 8044's recommended 1 MΩ/0.01 µF network is about 10 ms. A press shorter than the filter's threshold time may not be recognized; lower the value for high-speed sending.
-- `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, it defaults to `cw_out`, the combined sink created by `cw-mic-mix.sh`. If you haven't run that script, set it explicitly to a real sink, e.g. `PULSE_SINK=$(pactl get-default-sink)`.
+- `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, the keyer tries `cw_out`, the combined sink created by `cw-mic-mix.sh`. If that sink is unavailable, it falls back to the system default sink with a warning, so a bare run still plays; set this explicitly to choose a different sink.
 - `NO_COLOR` If set, `--list-devices` and the setup wizard do not use colors.
 
 ## Combine with mic input

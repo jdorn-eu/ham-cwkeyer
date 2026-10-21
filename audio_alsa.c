@@ -8,7 +8,9 @@
  * picks is what the renderer counts frames in.
  *
  * The default PCM is "pulse", and an unset PULSE_SINK is pointed at the
- * cw_out combined sink created by cw-mic-mix.sh.
+ * cw_out combined sink created by cw-mic-mix.sh.  If that sink is not
+ * available, the system's default sink is used instead, so a bare run still
+ * makes a sound.
  */
 
 #include <alsa/asoundlib.h>
@@ -71,7 +73,7 @@ static snd_pcm_t *open_audio(unsigned int *actual_rate)
     if (strcmp(dev, "pulse") == 0 && (!pulse_sink || !*pulse_sink)) {
         if (setenv("PULSE_SINK", "cw_out", 1) == 0) {
             forced_sink = 1;
-            fprintf(stderr, "PULSE_SINK unset or empty; defaulting to cw_out\n");
+            fprintf(stderr, "PULSE_SINK unset or empty; trying cw_out\n");
         } else {
             fprintf(stderr,
                     "warning: could not set PULSE_SINK=cw_out: %s\n",
@@ -79,49 +81,68 @@ static snd_pcm_t *open_audio(unsigned int *actual_rate)
         }
     }
 
-    err = snd_pcm_open(&pcm, dev, SND_PCM_STREAM_PLAYBACK, 0);
-    if (err < 0) {
-        fprintf(stderr,
-                "cannot open ALSA playback device '%s': %s\n",
-                dev, snd_strerror(err));
+    /*
+     * If the cw_out sink was only our default, a missing or unusable one is
+     * not a reason to refuse to run: fall back to the system's default sink
+     * and say so.  An explicit PULSE_SINK still fails loudly.
+     */
+    for (;;) {
+        pcm = NULL;
+        err = snd_pcm_open(&pcm, dev, SND_PCM_STREAM_PLAYBACK, 0);
+        if (err >= 0) {
+            err = snd_pcm_set_params(pcm,
+                                     SND_PCM_FORMAT_S16_LE,
+                                     SND_PCM_ACCESS_RW_INTERLEAVED,
+                                     1,
+                                     AUDIO_RATE,
+                                     1,
+                                     alsa_latency_us);
+
+            if (err < 0 && alsa_latency_us < 10000) {
+                fprintf(stderr,
+                        "warning: ALSA latency %u us failed: %s; "
+                        "retrying 10000 us\n",
+                        alsa_latency_us, snd_strerror(err));
+
+                alsa_latency_us = 10000;
+
+                err = snd_pcm_set_params(pcm,
+                                         SND_PCM_FORMAT_S16_LE,
+                                         SND_PCM_ACCESS_RW_INTERLEAVED,
+                                         1,
+                                         AUDIO_RATE,
+                                         1,
+                                         alsa_latency_us);
+            }
+        }
+
+        if (err >= 0)
+            break;
+
         if (forced_sink) {
             fprintf(stderr,
-                    "PULSE_SINK was defaulted to 'cw_out'. If that sink is "
-                    "unavailable, run ./cw-mic-mix.sh or set PULSE_SINK "
-                    "to a real sink, e.g. PULSE_SINK=$(pactl get-default-sink)\n");
+                    "warning: cannot use the cw_out sink (%s); "
+                    "using the default sink instead\n",
+                    snd_strerror(err));
+            (void)unsetenv("PULSE_SINK");
+            forced_sink = 0;
+            if (pcm) {
+                snd_pcm_close(pcm);
+                pcm = NULL;
+            }
+            continue;
         }
-        return NULL;
-    }
 
-    err = snd_pcm_set_params(pcm,
-                             SND_PCM_FORMAT_S16_LE,
-                             SND_PCM_ACCESS_RW_INTERLEAVED,
-                             1,
-                             AUDIO_RATE,
-                             1,
-                             alsa_latency_us);
-
-    if (err < 0 && alsa_latency_us < 10000) {
-        fprintf(stderr,
-                "warning: ALSA latency %u us failed: %s; retrying 10000 us\n",
-                alsa_latency_us, snd_strerror(err));
-
-        alsa_latency_us = 10000;
-
-        err = snd_pcm_set_params(pcm,
-                                 SND_PCM_FORMAT_S16_LE,
-                                 SND_PCM_ACCESS_RW_INTERLEAVED,
-                                 1,
-                                 AUDIO_RATE,
-                                 1,
-                                 alsa_latency_us);
-    }
-
-    if (err < 0) {
-        fprintf(stderr,
-                "snd_pcm_set_params failed for '%s': %s\n",
-                dev, snd_strerror(err));
-        snd_pcm_close(pcm);
+        if (pcm) {
+            fprintf(stderr,
+                    "snd_pcm_set_params failed for '%s': %s\n",
+                    dev, snd_strerror(err));
+            snd_pcm_close(pcm);
+        } else {
+            fprintf(stderr,
+                    "cannot open ALSA playback device '%s': %s\n",
+                    dev, snd_strerror(err));
+        }
         return NULL;
     }
 
