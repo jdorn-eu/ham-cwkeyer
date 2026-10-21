@@ -312,8 +312,9 @@ static void usage(FILE *out, const char *prog)
         " [wpm=12] [freq_hz=800] [dit_key] [dah_key] [options]\n"
         "       %s --setup [wpm=12] [freq_hz=800] [dit_key] [dah_key] [options]\n"
         "       %s --help | --version | --list-devices\n"
+        "       %s --list-audio-devices\n"
         "\n"
-        "Examples:\n", prog, prog);
+        "Examples:\n", prog, prog, prog);
     input_backend_usage(out, USAGE_EXAMPLES, prog);
     fprintf(out,
         "\n"
@@ -345,6 +346,9 @@ static void usage(FILE *out, const char *prog)
         "  --list-devices, -L\n");
     input_backend_usage(out, USAGE_DEVICE_OPTS, prog);
     fprintf(out,
+        "  --list-audio-devices, -A\n"
+        "            List the audio devices this platform accepts, with\n"
+        "            the names its audio settings use, and exit.\n"
         "\n"
         "With no arguments on an interactive terminal, cwkeyer runs the\n"
         "same tap-to-select setup and then starts with the defaults.\n"
@@ -2116,6 +2120,10 @@ int main(int argc, char **argv)
 
         if (strcmp(arg, "--list-devices") == 0 || strcmp(arg, "-L") == 0)
             return input_backend_list(stdout) == 0 ? 0 : 1;
+
+        if (strcmp(arg, "--list-audio-devices") == 0 ||
+            strcmp(arg, "-A") == 0)
+            return audio_backend_list(stdout) == 0 ? 0 : 1;
 
         if (strcmp(arg, "--setup") == 0) {
             do_setup = 1;

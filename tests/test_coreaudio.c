@@ -284,6 +284,23 @@ static void test_odd_buffer_lists(void)
     expect(touched == 0, "a non-mono buffer was written to");
 }
 
+/* The listing must name the knobs a user needs for CW_AUDIO_DEVICE and the
+ * mix/monitor devices, even on a machine with no audio hardware. */
+static void test_device_listing(void)
+{
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *out = open_memstream(&buf, &len);
+    int listed = out && audio_backend_list(out) == 0;
+
+    if (out)
+        fclose(out);
+    expect(listed, "the audio device listing failed");
+    expect(buf && strstr(buf, "CW_AUDIO_DEVICE") != NULL,
+           "the audio listing did not name CW_AUDIO_DEVICE");
+    free(buf);
+}
+
 /* ---- mic mixing ---- */
 
 static void reset_ring(ring_t *ring)
@@ -632,6 +649,7 @@ int main(void)
     test_latency_filter();
     test_monitor_render();
     test_odd_buffer_lists();
+    test_device_listing();
 
     if (failures == 0)
         printf("coreaudio tests passed\n");

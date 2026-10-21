@@ -497,18 +497,46 @@ static AudioDeviceID ca_find_device(const char *want, int for_output)
     return found;
 }
 
-static void ca_list_devices(void)
+static double ca_nominal_rate(AudioDeviceID id)
+{
+    Float64 rate = 0.0;
+    UInt32 sz = sizeof(rate);
+    AudioObjectPropertyAddress a = {
+        kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain };
+
+    if (AudioObjectGetPropertyData(id, &a, 0, NULL, &sz, &rate) != noErr)
+        return 0.0;
+    return rate;
+}
+
+static UInt32 ca_buffer_frames(AudioDeviceID id)
+{
+    UInt32 frames = 0;
+    UInt32 sz = sizeof(frames);
+    AudioObjectPropertyAddress a = {
+        kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain };
+
+    if (AudioObjectGetPropertyData(id, &a, 0, NULL, &sz, &frames) != noErr)
+        return 0;
+    return frames;
+}
+
+static void ca_list_devices(FILE *out)
 {
     AudioObjectPropertyAddress a = {
         kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal,
         kAudioObjectPropertyElementMain };
     UInt32 sz = 0;
     AudioDeviceID *ids;
+    AudioDeviceID def_out = ca_default_output();
+    AudioDeviceID def_in = ca_default_input();
     UInt32 n;
 
     if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &a, 0, NULL,
                                       &sz) != noErr || sz == 0) {
-        fprintf(stderr, "no audio output devices found\n");
+        fprintf(out, "no audio output devices found\n");
         return;
     }
 
@@ -520,14 +548,31 @@ static void ca_list_devices(void)
                                    ids) == noErr) {
         for (UInt32 i = 0; i < n; i++) {
             char name[256], uid[256];
+            int has_out = ca_has_output(ids[i]);
+            int has_in = ca_has_input(ids[i]);
+            double rate = ca_nominal_rate(ids[i]);
+            UInt32 buffer = has_out ? ca_buffer_frames(ids[i]) : 0;
 
             ca_device_name(ids[i], name, sizeof(name));
             ca_device_uid(ids[i], uid, sizeof(uid));
-            fprintf(stderr, "  %s%s%s  %s  [%s]\n",
-                    ca_has_output(ids[i]) ? "out" : "   ",
-                    ca_has_input(ids[i]) ? " in" : "   ",
-                    ca_has_output(ids[i]) || ca_has_input(ids[i]) ? "" : " --",
+            fprintf(out, "  %s%s%s  %s  [%s]",
+                    has_out ? "out" : "   ",
+                    has_in ? " in" : "   ",
+                    has_out || has_in ? "" : " --",
                     name, uid);
+            if (rate > 0.0)
+                fprintf(out, "  %.0f Hz", rate);
+            if (buffer)
+                fprintf(out, ", %u frames", (unsigned)buffer);
+            if (ids[i] == def_out || ids[i] == def_in) {
+                fputs("  (default", out);
+                if (ids[i] == def_out)
+                    fputs(" output", out);
+                if (ids[i] == def_in)
+                    fputs(" input", out);
+                fputc(')', out);
+            }
+            fputc('\n', out);
         }
     }
     free(ids);
@@ -560,7 +605,7 @@ static int ca_open_mic(AudioDeviceID output_dev)
         fprintf(stderr, "mix-mic: no audio input device matching '%s'\n",
                 want && *want ? want : "default");
         fprintf(stderr, "available audio devices:\n");
-        ca_list_devices();
+        ca_list_devices(stderr);
         return -1;
     }
     if (!ca_has_input(dev)) {
@@ -684,7 +729,7 @@ static int ca_open_monitor(AudioDeviceID primary)
     if (!dev) {
         fprintf(stderr, "monitor: no audio output device matching '%s'\n", want);
         fprintf(stderr, "available audio devices:\n");
-        ca_list_devices();
+        ca_list_devices(stderr);
         return -1;
     }
     if (!ca_has_output(dev)) {
@@ -766,6 +811,16 @@ int audio_backend_supports_mix(void)
     return 1;
 }
 
+int audio_backend_list(FILE *out)
+{
+    ca_list_devices(out);
+    fputs("\nSet CW_AUDIO_DEVICE to an output name or UID; the default "
+          "follows the system output.\n"
+          "CW_MIX_MIC_DEVICE selects the microphone and CW_MIX_MONITOR the "
+          "monitor output.\n", out);
+    return 0;
+}
+
 /* ---- the backend API ---- */
 
 int audio_backend_open(unsigned int *actual_rate)
@@ -806,7 +861,7 @@ int audio_backend_open(unsigned int *actual_rate)
         if (!dev) {
             fprintf(stderr, "no audio output device matching '%s'\n", want);
             fprintf(stderr, "available output devices:\n");
-            ca_list_devices();
+            ca_list_devices(stderr);
             return -1;
         }
         desc.componentSubType = kAudioUnitSubType_HALOutput;

@@ -146,8 +146,9 @@ Three things differ from Linux, all of them forced by the platform:
   measured output latency is about 12 ms. `CW_AUDIO_DEVICE` names an output
   device or UID and pins it; the default follows the system output and keeps
   following it, so plugging in headphones moves the sidetone with everything
-  else. Mark lengths are unaffected either way, because every mark is still
-  rendered at sample boundaries.
+  else. `./cwkeyer --list-audio-devices` prints the names, UIDs, rates, and
+  defaults. Mark lengths are unaffected either way, because every mark is
+  still rendered at sample boundaries.
 
 The capture ring is measured rather than merely reasoned about: a minute of
 `mix-mic` into BlackHole reported no dropped frames and one callback's worth
@@ -224,6 +225,13 @@ normal keyboard defaults to `nograb`; a dedicated paddle defaults to
 exclusive grab. If both taps use the same key, it offers straight-key mode.
 Speed, pitch, level, and weighting stay at their defaults and remain
 adjustable while running.
+
+`./cwkeyer --list-audio-devices` (or `-A`) prints the audio devices the
+platform accepts with the names its audio settings use: ALSA PCM names and a
+reminder about `PULSE_SINK` on Linux, and device names or UIDs with their
+rates, buffers, and defaults on macOS. It is the quickest way to fill in
+`CW_ALSA_DEVICE`, `CW_AUDIO_DEVICE`, `CW_MIX_MIC_DEVICE`, or
+`CW_MIX_MONITOR`.
 With no arguments on an interactive terminal, `./cwkeyer` runs the same
 setup; without a terminal it prints the usage text.
 The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). `./cwkeyer --help` lists the known key names; raw evdev key codes work too.
@@ -244,12 +252,15 @@ If stdin is a readable terminal or pipe, the keyer accepts single-key controls w
 A pipe's final controls are read even if its writer has already closed. Speed, pitch, level, and weighting changes take effect on the next element. On a terminal, the current settings are shown on a single status line that is rewritten in place rather than appended line by line. The startup values come from the command line, `CW_KEYER_LEVEL`, and the usual environment variables. These control keys are read from stdin, not from the evdev paddle device, so avoid remapping a paddle to one of them.
 
 ## Environment
-- `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is tried as `cw_out`, falling back to the system default sink if that one is unavailable.
+- `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is tried as `cw_out`, falling back to the system default sink if that one is unavailable. `./cwkeyer --list-audio-devices` prints the PCM names.
 - `CW_ALSA_LATENCY_US` Requested ALSA latency in microseconds. Default: `20000` (20 ms). ALSA may negotiate a different buffer/period; the achieved values are printed at startup. Smaller buffers may reduce latency but increase underrun risk.
 - `CW_KEYER_LEVEL` Sidetone level, percent of full scale, `0`–`100`. Default: `70`. The level can also be changed while running with `9` and `0`.
 - `CW_KEYER_WEIGHT_MS` Weighting, `-25`–`25` ms. Default: `0` (strict ITU timing). A constant time added to each mark and removed from the following space. The weighting can also be changed while running with `,` and `.`.
 - `CW_KEYER_DEBOUNCE_MS` Paddle RC filter time constant in milliseconds, `0`–`50`. Default: `10`; `0` disables the filter. The 8044's recommended 1 MΩ/0.01 µF network is about 10 ms. A press shorter than the filter's threshold time may not be recognized; lower the value for high-speed sending.
 - `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, the keyer tries `cw_out`, the combined sink created by `cw-mic-mix.sh`. If that sink is unavailable, it falls back to the system default sink with a warning, so a bare run still plays; set this explicitly to choose a different sink.
+- `CW_AUDIO_DEVICE` macOS only. Output device name or UID. Default: follow the system output, so the sidetone moves with everything else. `./cwkeyer --list-audio-devices` prints the names.
+- `CW_MIX_MIC_DEVICE` macOS only. Microphone captured by `mix-mic`. Default: the system input.
+- `CW_MIX_MONITOR` macOS only. Output device that plays the sidetone alone while the mixed stream goes to a voice application.
 - `NO_COLOR` If set, `--list-devices` and the setup wizard do not use colors.
 
 ## Combine with mic input

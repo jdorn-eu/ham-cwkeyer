@@ -291,11 +291,61 @@ int audio_backend_supports_mix(void)
     return 0;
 }
 
+int audio_backend_list(FILE *out)
+{
+    void **hints = NULL;
+    int rc;
+
+    rc = snd_device_name_hint(-1, "pcm", &hints);
+    if (rc < 0) {
+        fprintf(out, "cannot list ALSA PCM devices: %s\n", snd_strerror(rc));
+        return -1;
+    }
+
+    for (void **h = hints; h && *h; h++) {
+        char *name = snd_device_name_get_hint(*h, "NAME");
+        char *desc = snd_device_name_get_hint(*h, "DESC");
+        char *ioid = snd_device_name_get_hint(*h, "IOID");
+
+        if (!name) {
+            free(desc);
+            free(ioid);
+            continue;
+        }
+        if (ioid && strcmp(ioid, "Output") != 0) {
+            free(name);
+            free(desc);
+            free(ioid);
+            continue;
+        }
+
+        fprintf(out, "  %s", name);
+        if (desc && *desc) {
+            fputs("  ", out);
+            for (const char *p = desc; *p; p++)
+                fputc(*p == '\n' ? ' ' : *p, out);
+        }
+        fputc('\n', out);
+
+        free(name);
+        free(desc);
+        free(ioid);
+    }
+
+    snd_device_name_free_hint(hints);
+
+    fputs("\nSet CW_ALSA_DEVICE to one of these PCM names (default: pulse).\n"
+          "PulseAudio/PipeWire sinks are selected with PULSE_SINK; list them "
+          "with:\n  pactl list short sinks\n", out);
+    return 0;
+}
+
 void audio_backend_usage(FILE *out)
 {
     fputs("  CW_ALSA_DEVICE=pulse       ALSA PCM to open. Default: pulse\n"
           "  CW_ALSA_LATENCY_US=20000   Requested ALSA latency in us\n"
           "  PULSE_SINK=cw_out          If the device is pulse and PULSE_SINK is\n"
-          "                             unset, it defaults to cw_out (created by\n"
-          "                             cw-mic-mix.sh)\n", out);
+          "                             unset, cw_out is tried first (created\n"
+          "                             by cw-mic-mix.sh), with the default\n"
+          "                             sink as the fallback\n", out);
 }

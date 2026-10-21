@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--list-audio-devices` (`-A`): print the audio devices the platform accepts
+  with the names its settings use, so the values for `CW_ALSA_DEVICE`,
+  `CW_AUDIO_DEVICE`, `CW_MIX_MIC_DEVICE`, and `CW_MIX_MONITOR` are discoverable
+  without provoking an error.  Linux lists ALSA PCM names and points at
+  `PULSE_SINK`; macOS lists names, UIDs, nominal rates, buffer sizes, and the
+  system defaults.
 - `CW_MIX_MONITOR` on macOS: play the sidetone alone on another device while
   the mixed stream goes to a voice application, which is what makes `mix-mic`
   usable - without somewhere to hear it, sending everything to BlackHole means

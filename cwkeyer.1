@@ -33,6 +33,9 @@ cwkeyer \- low-latency iambic CW sidetone keyer
 .B cwkeyer
 .B \-\-list\-devices
 .br
+.B cwkeyer
+.B \-\-list\-audio\-devices
+.br
 .SH DESCRIPTION
 .B cwkeyer
 reads a keyboard-emulating paddle adapter and generates a sidetone. It
@@ -180,6 +183,19 @@ to disable them. The
 or
 .B paddle
 guess is a hint only and is not used to select a device.
+.TP
+.BR \-\-list\-audio\-devices ", " \-A
+List the audio devices the platform accepts, with the names its audio
+settings use.  On Linux these are ALSA PCM names for
+.BR CW_ALSA_DEVICE ,
+with a reminder that PulseAudio/PipeWire sinks are selected through
+.BR PULSE_SINK .
+On macOS these are the names and UIDs, with the nominal rate, current
+buffer, and system defaults, for
+.BR CW_AUDIO_DEVICE ,
+.BR CW_MIX_MIC_DEVICE ,
+and
+.BR CW_MIX_MONITOR .
 .TP
 .B \-\-setup
 Interactively choose the paddle device by tapping the dot lever and then

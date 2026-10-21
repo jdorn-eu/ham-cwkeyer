@@ -122,6 +122,22 @@ int main(void)
         failures++;
     }
 
+    /* The listing names the ALSA knob and must not need a device to run. */
+    {
+        char *listing = NULL;
+        size_t len = 0;
+        FILE *out = open_memstream(&listing, &len);
+        int listed = out && audio_backend_list(out) == 0;
+
+        if (out)
+            fclose(out);
+        if (!listed || !listing || strstr(listing, "CW_ALSA_DEVICE") == NULL) {
+            fprintf(stderr, "audio: device listing failed\n");
+            failures++;
+        }
+        free(listing);
+    }
+
     if (failures == 0)
         printf("audio tests passed\n");
     else

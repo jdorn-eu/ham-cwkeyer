@@ -63,6 +63,14 @@ int  audio_backend_run(void);
 void audio_backend_close(void);
 
 /*
+ * audio_backend_list() prints the playback devices this backend accepts, in
+ * the form its own device settings use, and returns 0 on success.  The
+ * output is the place a user finds the names for CW_ALSA_DEVICE or
+ * CW_AUDIO_DEVICE without having to provoke an error first.
+ */
+int  audio_backend_list(FILE *out);
+
+/*
  * Input.
  *
  * input_backend_thread() is the thread body. It watches the paddles and
