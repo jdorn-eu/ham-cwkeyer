@@ -10,10 +10,10 @@
  * the Linux backend feeds.
  *
  * Everything here was measured before it was written (see the notes in the
- * README): a HALOutput unit accepts a mono S16 48 kHz client format, asks for
- * exactly one device buffer per callback (512 frames, 10.67 ms, on the
- * built-in speakers), and keeps the AU's own sample timeline contiguous.  Two
- * consequences shape this file:
+ * README): a HALOutput unit accepts a mono S16 client format at the device's
+ * nominal rate, asks for exactly one device buffer per callback (512 frames,
+ * 10.67 ms, on the built-in speakers), and keeps the AU's own sample timeline
+ * contiguous.  Two consequences shape this file:
  *
  *   - The slice size is the device's, not ours, so the renderer must accept
  *     any inNumberFrames.  It does: generate_audio() is size-agnostic.
@@ -88,12 +88,12 @@ static double host_seconds(uint64_t ticks)
  *   - an optional monitor output plays the sidetone alone, so the operator
  *     can hear what they are sending while the mixed stream goes elsewhere.
  *
- * Both cross a ring.  The rates are nominally the same 48 kHz; when the clocks
+ * Both cross a ring.  The rates are nominally the same; when the clocks
  * disagree the ring absorbs it: if it overflows the oldest samples are
  * dropped, and if it runs dry the last sample is held, so neither a gap nor a
  * step appears in the audio.
  */
-#define RING_FRAMES 48000u              /* one second */
+#define RING_FRAMES 48000u              /* about one second at 48 kHz */
 #define MIX_SLICE_FRAMES 4096u          /* scratch for one callback */
 
 typedef struct {
@@ -651,7 +651,7 @@ static int ca_open_mic(AudioDeviceID output_dev)
     }
 
     memset(&fmt, 0, sizeof(fmt));
-    fmt.mSampleRate = (Float64)AUDIO_RATE;
+    fmt.mSampleRate = (Float64)ca_rate;
     fmt.mFormatID = kAudioFormatLinearPCM;
     fmt.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
     fmt.mBytesPerPacket = 2;
@@ -766,7 +766,7 @@ static int ca_open_monitor(AudioDeviceID primary)
     }
 
     memset(&fmt, 0, sizeof(fmt));
-    fmt.mSampleRate = (Float64)AUDIO_RATE;
+    fmt.mSampleRate = (Float64)ca_rate;
     fmt.mFormatID = kAudioFormatLinearPCM;
     fmt.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
     fmt.mBytesPerPacket = 2;
@@ -839,6 +839,7 @@ int audio_backend_open(unsigned int *actual_rate)
     AudioStreamBasicDescription fmt;
     AudioStreamBasicDescription got;
     UInt32 got_size = sizeof(got);
+    double wanted_rate;
     AURenderCallbackStruct cb = { .inputProc = ca_render, .inputProcRefCon = NULL };
 
     /*
@@ -882,6 +883,16 @@ int audio_backend_open(unsigned int *actual_rate)
         return -1;
     }
 
+    /*
+     * Use the device's own rate as the client format, so the renderer counts
+     * frames at the rate the device runs instead of hiding a sample-rate
+     * conversion in the HAL.  A device that cannot report one gets the same
+     * 48 kHz the Linux backend asks ALSA for.
+     */
+    wanted_rate = ca_nominal_rate(dev);
+    if (wanted_rate < 1.0)
+        wanted_rate = (double)AUDIO_RATE;
+
     err = AudioComponentInstanceNew(comp, &ca_unit);
     if (err != noErr) {
         fprintf(stderr, "AudioComponentInstanceNew: %d\n", (int)err);
@@ -908,7 +919,7 @@ int audio_backend_open(unsigned int *actual_rate)
     }
 
     memset(&fmt, 0, sizeof(fmt));
-    fmt.mSampleRate = (Float64)AUDIO_RATE;
+    fmt.mSampleRate = wanted_rate;
     fmt.mFormatID = kAudioFormatLinearPCM;
     fmt.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
     fmt.mBytesPerPacket = 2;
@@ -920,8 +931,19 @@ int audio_backend_open(unsigned int *actual_rate)
     err = AudioUnitSetProperty(ca_unit, kAudioUnitProperty_StreamFormat,
                                kAudioUnitScope_Input, 0, &fmt, sizeof(fmt));
     if (err != noErr) {
-        fprintf(stderr, "cannot set the mono 16-bit %d Hz client format: %d\n",
-                AUDIO_RATE, (int)err);
+        fprintf(stderr,
+                "warning: cannot use a %.0f Hz client format (%d); "
+                "retrying %d Hz\n",
+                wanted_rate, (int)err, AUDIO_RATE);
+        wanted_rate = (double)AUDIO_RATE;
+        fmt.mSampleRate = wanted_rate;
+        err = AudioUnitSetProperty(ca_unit, kAudioUnitProperty_StreamFormat,
+                                   kAudioUnitScope_Input, 0, &fmt,
+                                   sizeof(fmt));
+    }
+    if (err != noErr) {
+        fprintf(stderr, "cannot set the mono 16-bit %.0f Hz client format: "
+                "%d\n", wanted_rate, (int)err);
         goto fail;
     }
 
@@ -938,20 +960,17 @@ int audio_backend_open(unsigned int *actual_rate)
         goto fail;
     }
 
-    /* Confirm the AU took the format we asked for; the renderer counts
-     * frames at this rate. */
+    /* Accept the rate the AU reports: it is what the renderer counts in. */
     if (AudioUnitGetProperty(ca_unit, kAudioUnitProperty_StreamFormat,
                              kAudioUnitScope_Input, 0, &got, &got_size) != noErr) {
         fprintf(stderr, "cannot read back the audio stream format\n");
         goto fail;
     }
-    if ((unsigned int)got.mSampleRate != AUDIO_RATE) {
-        fprintf(stderr, "CoreAudio negotiated %u Hz, expected %d\n",
-                (unsigned int)got.mSampleRate, AUDIO_RATE);
+    ca_rate = (unsigned int)(got.mSampleRate + 0.5);
+    if (ca_rate == 0) {
+        fprintf(stderr, "the audio unit reported a zero sample rate\n");
         goto fail;
     }
-
-    ca_rate = (unsigned int)got.mSampleRate;
     *actual_rate = ca_rate;
 
     memset(&ca_state, 0, sizeof(ca_state));

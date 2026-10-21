@@ -143,10 +143,13 @@ Three things differ from Linux, all of them forced by the platform:
   on a normal keyboard.
 - **Latency is the device buffer.** CoreAudio asks for one device buffer per
   render callback (512 frames, 10.7 ms on the built-in speakers) and the
-  measured output latency is about 12 ms. `CW_AUDIO_DEVICE` names an output
-  device or UID and pins it; the default follows the system output and keeps
-  following it, so plugging in headphones moves the sidetone with everything
-  else. `./cwkeyer --list-audio-devices` prints the names, UIDs, rates, and
+  measured output latency is about 12 ms. The client format uses the output
+  device's nominal rate, so the renderer counts frames at the rate the device
+  runs rather than through a hidden conversion; 48 kHz is the fallback.
+  `CW_AUDIO_DEVICE` names an output device or UID and pins it; the default
+  follows the system output and keeps following it, so plugging in headphones
+  moves the sidetone with everything else. `./cwkeyer --list-audio-devices`
+  prints the names, UIDs, rates, and
   defaults. Mark lengths are unaffected either way, because every mark is
   still rendered at sample boundaries.
 

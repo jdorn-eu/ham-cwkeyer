@@ -63,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- macOS now uses the output device's nominal sample rate for the client format,
+  falling back to 48 kHz if the unit rejects it, instead of pinning 48 kHz and
+  relying on a hidden HAL conversion. The negotiated rate is what the renderer
+  and the startup banner report.
 - Paddle polling now backs off while nothing is happening: 200 us at first,
   doubling to 2 ms (1 ms with the RC filter disabled) and resetting when a
   lever is seen. A measured idle run fell from about 5.4% to 0.4% of one core.
