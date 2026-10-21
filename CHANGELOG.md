@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Exclusive access now defaults to what the backend can actually take:
+  `nograb` is still honoured, `--setup` still asks, but a direct run on macOS
+  as a normal user no longer attempts a seize that is bound to fail (and warn)
+  on every start. Linux keeps grabbing by default.
 - The macOS device argument may stop at a field boundary: the last field is the
   USB port, so a command written against one port stopped working when the
   adapter was moved. `04d8:01a6` now selects the adapter in any port, and an
@@ -119,6 +123,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The shared setup wizard no longer names Linux devices in its failure messages.
+  It uses the backend's own device noun and permission hint, so macOS says
+  "HID keyboard" and points at Input Monitoring instead of udev.
+- A bare Linux run with `CW_ALSA_DEVICE=pulse` and no `PULSE_SINK` now falls back
+  to the system default sink when the `cw_out` sink from `cw-mic-mix.sh` is not
+  available, instead of refusing to start. An explicitly set `PULSE_SINK` is
+  still never replaced.
 - Two defects on the macOS default-output path, found by running it: the
   playback unit asked for `kAudioOutputUnitProperty_EnableIO`, which
   `DefaultOutput` does not have, so every run without `CW_AUDIO_DEVICE`
