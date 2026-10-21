@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Paddle polling now backs off while nothing is happening: 200 us at first,
+  doubling to 2 ms (1 ms with the RC filter disabled) and resetting when a
+  lever is seen. A measured idle run fell from about 5.4% to 0.4% of one core.
+  Presses are latched by the input backend and held by the RC filter, so the
+  backoff delays noticing a tap rather than losing it.
 - Exclusive access now defaults to what the backend can actually take:
   `nograb` is still honoured, `--setup` still asks, but a direct run on macOS
   as a normal user no longer attempts a seize that is bound to fail (and warn)

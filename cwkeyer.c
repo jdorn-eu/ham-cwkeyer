@@ -854,6 +854,19 @@ static void watch_keyer_until_ns(int64_t deadline, keyer_t *keyer)
     }
 }
 
+/*
+ * While nothing is being keyed, poll less often.  A press is latched by the
+ * input backend and held by the RC filter, so polling less often does not
+ * lose a tap; it only delays noticing it.  Start fast after any activity and
+ * double up to a cap that stays well below the filter's time constant.  With
+ * the filter disabled, keep the cap at 1 ms for high-speed sending.
+ */
+static int64_t idle_poll_next(int64_t poll_ns, int64_t cap_ns)
+{
+    poll_ns *= 2;
+    return poll_ns < cap_ns ? poll_ns : cap_ns;
+}
+
 
 static void clear_input_state(void)
 {
@@ -1619,6 +1632,8 @@ static void *keyer_thread(void *arg)
     decode_state_t dec = {0};
     int64_t prev_expected_start = 0;
     int64_t last_dit_ns = -1;
+    int64_t idle_poll_ns = 200000;
+    const int64_t idle_poll_cap_ns = debounce_ns > 0 ? 2000000LL : 1000000LL;
 
     while (keep_running()) {
         /*
@@ -1640,7 +1655,12 @@ static void *keyer_thread(void *arg)
                                       now, debounce_ns);
 
             ASTORE(straight_down, dit || dah);
-            sleep_ns(200000LL);
+            if (dit || dah)
+                idle_poll_ns = 200000;
+            sleep_ns(idle_poll_ns);
+            if (!dit && !dah)
+                idle_poll_ns = idle_poll_next(idle_poll_ns,
+                                              idle_poll_cap_ns);
             continue;
         }
 
@@ -1677,11 +1697,16 @@ static void *keyer_thread(void *arg)
 
                 /*
                  * Idle poll interval. Lower values reduce input-to-keyer
-                 * latency but increase wakeups.
+                 * latency but increase wakeups; the interval backs off while
+                 * nothing is happening and resets when a paddle is seen.
                  */
-                sleep_ns(200000LL);
+                sleep_ns(idle_poll_ns);
+                idle_poll_ns = idle_poll_next(idle_poll_ns,
+                                              idle_poll_cap_ns);
                 continue;
             }
+
+            idle_poll_ns = 200000;
         }
 
         /* In an IN_* state: emit this mark. */

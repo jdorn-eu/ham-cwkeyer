@@ -1803,6 +1803,14 @@ int main(void)
         failures++;
     }
 
+    /* Idle polling doubles up to its cap and never overshoots it. */
+    if (idle_poll_next(200000, 2000000) != 400000 ||
+        idle_poll_next(1000000, 2000000) != 2000000 ||
+        idle_poll_next(2000000, 2000000) != 2000000) {
+        fprintf(stderr, "idle poll backoff did not double and cap\n");
+        failures++;
+    }
+
     /* Enqueue the next mark early: rendering must retain a full mark and
      * insert the one-dit gap, irrespective of when the event was received. */
     queue_mark(start_ns, 100000000LL);
