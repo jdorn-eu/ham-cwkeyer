@@ -817,7 +817,7 @@ void input_backend_resume(void)
 
 const char *input_backend_grab_description(void)
 {
-    return do_grab ? "grab requested" : "nograb";
+    return do_grab ? "grab requested" : "no grab";
 }
 
 /*

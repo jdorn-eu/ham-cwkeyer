@@ -38,6 +38,14 @@ ALSA, on macOS it is read through IOKit HID and played through CoreAudio (see
 The paddle inputs are filtered with a digital approximation of the 8044's
 external RC network. The recommended 1 M\(*W/0.01 \(*mF network has a time
 constant of about 10 ms.
+.PP
+With no arguments on a terminal,
+.B cwkeyer
+asks whether to start the setup or print the help. In a pipe it prints the
+help and exits with status 2; pass
+.BR \-\-setup ,
+.BR \-\-list\-inputs ,
+or a device explicitly from a script.
 .SH MACOS
 The same binary runs on macOS, where a paddle adapter is a plain USB HID
 keyboard and no driver or kernel extension is involved. The device argument

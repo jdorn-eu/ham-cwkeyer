@@ -83,7 +83,7 @@ void input_backend_resume(void)
 const char *input_backend_grab_description(void)
 {
     /* Whether the grab actually took is reported by acquire_evdev_grab(). */
-    return do_grab ? "grab requested" : "nograb";
+    return do_grab ? "grab requested" : "no grab";
 }
 
 int input_backend_grab_possible(void)
