@@ -13,23 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cwkeyer.app` so macOS attaches Input Monitoring and Microphone permissions
   to the keyer rather than the terminal.  It is an agent (no Dock icon) and
   runs from LaunchServices; interactive setup still belongs in a terminal.
-- `--list-audio-devices` (`-A`): print the audio devices the platform accepts
+- `--list-audio` (`-A`): print the audio devices the platform accepts
   with the names its settings use, so the values for `CW_ALSA_DEVICE`,
   `CW_AUDIO_DEVICE`, `CW_MIX_MIC_DEVICE`, and `CW_MIX_MONITOR` are discoverable
   without provoking an error.  Linux lists ALSA PCM names and points at
   `PULSE_SINK`; macOS lists names, UIDs, nominal rates, buffer sizes, and the
   system defaults.
 - `CW_MIX_MONITOR` on macOS: play the sidetone alone on another device while
-  the mixed stream goes to a voice application, which is what makes `mix-mic`
+  the mixed stream goes to a voice application, which is what makes `--mix-mic`
   usable - without somewhere to hear it, sending everything to BlackHole means
-  sending blind. It works without `mix-mic` as well, for the simpler case of
+  sending blind. It works without `--mix-mic` as well, for the simpler case of
   routing the tone to a virtual device and monitoring locally. The sidetone
   crosses a ring like the microphone does, so the two units can run on their
   own clocks.
 - macOS support: `input_hid.c` and `audio_coreaudio.c` implement the backend
   contract with IOKit HID and CoreAudio. A paddle adapter is a plain USB HID
   keyboard there, so no driver is needed and the default
-  LEFTCTRL/RIGHTCTRL paddle mapping is unchanged. `--list-devices` and
+  LEFTCTRL/RIGHTCTRL paddle mapping is unchanged. `--list-inputs` and
   `--setup` work as on Linux; devices are named `vendor:product:location`.
   Exclusive access uses `kIOHIDOptionsTypeSeizeDevice` and needs root, so
   losing it is a warning rather than an error; reading keyboard HID values
@@ -41,20 +41,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Known paddle adapters are recognized by USB vendor/product ID, starting
   with the HRS PaddleAdapter. The table in `cwkeyer.c` stores the default
   dot/dash key codes and is a one-line addition per device. A single known
-  adapter skips the tap test and uses those codes; `--list-devices` shows
+  adapter skips the tap test and uses those codes; `--list-inputs` shows
   the known label.
 - `--setup`: interactively choose the paddle device by tapping the dot and
-  dash levers, which also learns both key codes. Starts with the default
-  speed, pitch, level, and weighting. A keyboard-like device defaults to
-  `nograb`; a paddle defaults to exclusive grab. If both taps use the same
-  key, the wizard offers straight-key mode.
-- `--list-devices` (`-L`): list readable `/dev/input/event*` devices with a
+  dash levers, which also learns both key codes. Runs with the command-line
+  settings, or the defaults. A keyboard-like device defaults to no exclusive
+  access; a paddle defaults to exclusive grab when possible. If both taps use
+  the same key, the wizard offers straight-key mode.
+- `--list-inputs` (`-L`): list readable `/dev/input/event*` devices with a
   keyboard/paddle guess and a note when the default LEFTCTRL/RIGHTCTRL
   paddle keys are reported. Devices are grouped (unknown, keyboard, paddle)
   and sorted by event number within each group; the group names are colored
   on a terminal unless `NO_COLOR` is set. The guess is a hint for humans,
   not a device selection policy.
-- `mix-mic` on macOS: the microphone is captured by a second audio unit and
+- `--mix-mic` on macOS: the microphone is captured by a second audio unit and
   summed with the sidetone in the render callback, so one output device (for
   example BlackHole) carries both and a voice application can take the
   operator and the sidetone from a single input. `CW_AUDIO_DEVICE` says where
@@ -62,19 +62,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   units run on their own clocks, so captured samples cross a ring buffer:
   overflow drops the oldest, and a dry ring holds the last sample rather than
   stepping to zero. Missing microphone, missing permission or a refused seize
-  all fall back to an ordinary sidetone with a warning. On Linux `mix-mic` is
+  all fall back to an ordinary sidetone with a warning. On Linux `--mix-mic` is
   refused with a pointer to `cw-mic-mix.sh`.
 
 ### Changed
 
+- The command line was redesigned.  `DEVICE` is the only positional argument;
+  speed, frequency, keys, level, weighting, debounce, and modes are named
+  options (`--wpm`, `--freq`, `--dit`, `--dah`, `--level`, `--weight`,
+  `--debounce`, `--straight`, `--decode`, `--mix-mic`).  The old positional
+  `[wpm] [freq] [dit] [dah]` form and the bare
+  `nograb`/`decode`/`straight`/`mix-mic` words are gone.
+  `--list-devices` and `--list-audio-devices` became `--list-inputs` and
+  `--list-audio`.  Usage errors exit 2; no arguments on a terminal prompt for
+  setup or usage, and in a pipe print the usage.  This is a breaking change.
 - CI now runs clang's static analyzer, the ThreadSanitizer ring test, and the
   app bundle on macOS, and adds a current macOS runner next to the pinned one.
   The release workflow is gated on a macOS build and test.
-- `--help` takes the `mix-mic` paragraph from the macOS backend. Linux help
-  points at `cw-mic-mix.sh` instead of advertising a keyword it refuses. The
-  README's design description and timing notes now name the input and audio
-  backends rather than evdev and ALSA, and its Linux-only install, run, and
-  environment material is labelled as such.
+- `--help` takes the `--mix-mic` option paragraph from the macOS backend.
+  Linux help points at `cw-mic-mix.sh` instead of advertising an option it
+  refuses. The README's design description and timing notes now name the
+  input and audio backends rather than evdev and ALSA, and its Linux-only
+  install, run, and environment material is labelled as such.
 - macOS now uses the output device's nominal sample rate for the client format,
   falling back to 48 kHz if the unit rejects it, instead of pinning 48 kHz and
   relying on a hidden HAL conversion. The negotiated rate is what the renderer
@@ -85,9 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Presses are latched by the input backend and held by the RC filter, so the
   backoff delays noticing a tap rather than losing it.
 - Exclusive access now defaults to what the backend can actually take:
-  `nograb` is still honoured, `--setup` still asks, but a direct run on macOS
-  as a normal user no longer attempts a seize that is bound to fail (and warn)
-  on every start. Linux keeps grabbing by default.
+  `--grab`/`--no-grab` are explicit, `--setup` asks when neither is given, and
+  a direct run on macOS as a normal user no longer attempts a seize that is
+  bound to fail (and warn) on every start. Linux keeps grabbing by default.
 - The macOS device argument may stop at a field boundary: the last field is the
   USB port, so a command written against one port stopped working when the
   adapter was moved. `04d8:01a6` now selects the adapter in any port, and an
@@ -95,22 +104,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The first render-callback transition is no longer reported as a dropout. A
   unit that has just started can re-anchor its sample timeline while it
   settles, which is not audio anyone could have heard.
-- The command line is more forgiving about order and more direct about
-  mistakes: options and keywords may appear anywhere, and `--setup` can be
-  combined with the settings it should start with (`--setup 25 700 mix-mic`
-  reads the speed, pitch, and key names instead of a device path). A bad
-  argument now gets one line naming the problem plus a pointer to `--help`
-  instead of the whole usage text, an argument starting with `-` is reported
-  as an unknown option rather than being taken for a device path, and
-  `--help` is written to standard output so it can be piped or paged.
-- `--setup` and `--list-devices` now live in the portable core and are built
+- `--setup` and `--list-inputs` now live in the portable core and are built
   on five backend primitives (`discover`, `close_devices`, `drain`,
   `wait_press`, `wait_release`), so the two platforms share one wizard and
   one listing instead of two copies. Device codes and the device view
   (`input_device_t`) moved with them; a backend now fills in `id`, `order`,
   `readable`, and an opaque `handle`.
 - `--help` takes its device argument, examples, key-code note, and
-  `--list-devices`/`--setup` paragraphs from the backend, so the macOS help
+  `--list-inputs`/`--setup` paragraphs from the backend, so the macOS help
   no longer talks about evdev. The portable environment variables are now
   listed before the platform's, which moves the two `CW_ALSA_*` lines.
 - `sleep_ns()` uses `nanosleep()` instead of the Linux-only
@@ -121,8 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The startup banner says "grab requested" rather than claiming the grab
   succeeded, since the attempt happens when the device opens; a backend that
   cannot seize as this user now says so through the new
-  `input_backend_grab_possible()`, which makes `--setup` default to `nograb`
-  on macOS unless it is running as root.
+  `input_backend_grab_possible()`, which makes `--setup` default to no
+  exclusive access on macOS unless it is running as root.
 - `make analyze` uses clang's analyzer when the compiler is clang; `make
   install` installs `cw-mic-mix` and its man page only on Linux, since it
   drives `pactl`; the man page marks the `CW_ALSA_*` and `PULSE_SINK`

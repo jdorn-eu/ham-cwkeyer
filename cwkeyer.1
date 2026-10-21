@@ -4,44 +4,30 @@
 cwkeyer \- low-latency iambic CW sidetone keyer
 .SH SYNOPSIS
 .B cwkeyer
-.br
-.B cwkeyer
-.I DEVICE
-.RI [ wpm ]
-.RI [ freq_hz ]
-.RI [ dit_key ]
-.RI [ dah_key ]
-.RI [ nograb ]
-.RI [ decode ]
-.RI [ straight ]
-.RI [ mix\-mic ]
+.RI [ options ]
+.RI [ device ]
 .br
 .B cwkeyer
 .B \-\-setup
-.RI [ wpm ]
-.RI [ freq_hz ]
-.RI [ dit_key ]
-.RI [ dah_key ]
 .RI [ options ]
+.br
+.B cwkeyer
+.B \-\-list\-inputs
+.br
+.B cwkeyer
+.B \-\-list\-audio
 .br
 .B cwkeyer
 .B \-\-help
 .br
 .B cwkeyer
 .B \-\-version
-.br
-.B cwkeyer
-.B \-\-list\-devices
-.br
-.B cwkeyer
-.B \-\-list\-audio\-devices
-.br
 .SH DESCRIPTION
 .B cwkeyer
 reads a keyboard-emulating paddle adapter and generates a sidetone. It
 implements the Curtis 8044 type B (Accu-keyer) iambic keyer,
-with dot/dash paddle memory, and can optionally decode the keyed text. A
-.B straight
+with dot/dash paddle memory, and can optionally decode the keyed text.
+.B \-\-straight
 mode passes the paddles through as a manual key instead.
 .PP
 The details of reading the paddles and playing the tone belong to the
@@ -60,26 +46,26 @@ is then
 (for example
 .IR 04d8:01a6:00110000 )
 as printed by
-.BR \-\-list\-devices .
+.BR \-\-list\-inputs .
 The last field is the USB port, so it changes when the adapter is moved; the
 argument may stop at a field boundary, and
 .I 04d8:01a6
 selects the adapter in any port as long as that is unambiguous. The built-in
 keyboard reports zeros for vendor and product, so it needs the full id, and it
 is usable as a paddle with
-.B nograb
+.B \-\-no\-grab
 and your own key names.
 .PP
 Reading keyboard input needs the Input Monitoring permission, which macOS
 attributes to the terminal that launched the keyer. If the permission has
 been denied, the keyer reports it at startup and from the setup wizard rather
-than waiting for a tap that never arrives. Taking exclusive control
-stands in for evdev's grab and is refused for keyboards unless the process is
-root, so the keyer defaults to
-.B nograb
-when exclusive access is not possible, and the setup wizard offers the same
-default. An explicit attempt that fails warns and falls back. Without it the
-levers also reach the foreground application. The
+than waiting for a tap that never arrives. Taking exclusive control stands in
+for evdev's grab and is refused for keyboards unless the process is root, so
+the keyer avoids it when it is not possible, and the setup wizard offers the
+same default.
+.B \-\-grab
+forces an attempt; one that fails warns and falls back. Without exclusive
+access the levers also reach the foreground application. The
 .B CW_ALSA_DEVICE
 and
 .B PULSE_SINK
@@ -89,35 +75,91 @@ to choose the output by name or UID. Latency is the output device's buffer,
 and the achieved value is printed at startup and at exit.
 .SH ARGUMENTS
 .TP
-.I DEVICE
+.I device
 The input device to read. On Linux this is an evdev node such as
 .IR /dev/input/event3 ;
 on macOS it is
 .I vendor:product:location
 as printed by
-.BR \-\-list\-devices .
+.BR \-\-list\-inputs .
+The same value can be given with
+.BR \-\-device .
+At most one positional argument is accepted, and there are no positional
+speed, frequency, or key-mapping arguments.
+.SH OPTIONS
+.SS Actions
 .TP
-.I /dev/input/eventX
-The Linux evdev device to read (see
-.BR MACOS ). Use
-.BR evtest (8)
+.BR \-\-setup ", " \-s
+Interactively choose the paddle device by tapping the dot lever and then the
+dash lever, then run with the settings given on the command line (or the
+defaults). The device and both key codes are learned from the taps, so no
+.I device
+is needed and giving one is an error. If exactly one known paddle adapter is
+present, the tap test is skipped and the adapter's table default keys are
+used. If both taps use the same key, it offers straight-key mode. Requires an
+interactive terminal on standard input.
+.TP
+.BR \-\-list\-inputs ", " \-L
+List the readable input devices, grouped as
+.BR unknown ,
+.BR keyboard ,
 or
-.BR libinput (1)
-to find it, or run
-.B cwkeyer \-\-list\-devices
-for a quick list of readable input devices. A normal keyboard is usually
-.IR /dev/input/event3 .
+.BR paddle .
+Groups are ordered so paddles come last, nearest the shell prompt, and the
+devices in each group are sorted by event number. A device that reports the
+default LEFTCTRL/RIGHTCTRL paddle keys is called out. The category names are
+colored only when standard output is a terminal; set
+.B NO_COLOR
+to disable them. The
+.B keyboard
+or
+.B paddle
+guess is a hint only and is not used to select a device.
 .TP
-.I wpm
-Keying speed in words per minute (default 12, range 1\(en40).
-At 40 WPM, the full \(+-25 ms weighting range still leaves positive
-marks and spaces.
+.BR \-\-list\-audio ", " \-A
+List the audio devices the platform accepts, with the names its audio
+settings use. On Linux these are ALSA PCM names for
+.BR CW_ALSA_DEVICE ,
+with a reminder that PulseAudio/PipeWire sinks are selected through
+.BR PULSE_SINK .
+On macOS these are the names and UIDs, with the nominal rate, current buffer,
+and system defaults, for
+.BR CW_AUDIO_DEVICE ,
+.BR CW_MIX_MIC_DEVICE ,
+and
+.BR CW_MIX_MONITOR .
 .TP
-.I freq_hz
+.BR \-\-help ", " \-h
+Print the help and exit.
+.TP
+.BR \-\-version ", " \-V
+Print the version and exit.
+.SS Input
+.TP
+.BI \-\-device " DEVICE"
+The input device. Equivalent to the single positional
+.IR device .
+.TP
+.B \-\-grab
+Request exclusive access even if it may fail. Without this, the keyer takes
+exclusive access when the backend says it can.
+.TP
+.B \-\-no\-grab
+Never take exclusive access; useful when testing on the keyboard you are
+typing on.
+.SS Keying
+.TP
+.BI \-\-wpm " WPM"
+Keying speed in words per minute, 1\(en40 (default 12). At 40 WPM the full
+\(+-25 ms weighting range still leaves positive marks and spaces.
+.TP
+.BI \-\-freq " HZ"
 Sidetone frequency in hertz (default 800).
 .TP
-.IR dit_key ", " dah_key
-evdev key names or codes for the dit and dah paddles (default
+.BI \-\-dit " KEY"
+.TQ
+.BI \-\-dah " KEY"
+Key names or codes for the dit and dah paddles (default
 .B LEFTCTRL
 and
 .BR RIGHTCTRL ).
@@ -133,122 +175,98 @@ a
 .B KEY_
 prefix and raw numeric codes are also accepted.
 .TP
-.B nograb
-Do not take exclusive control of the input device; useful when testing on
-the keyboard you are typing on.
-.TP
-.B decode
-Print each keyed symbol decoded to text, without newlines. Unknown symbols
-are ignored, and a pause longer than seven dits prints a space.
-.TP
-.B straight
-Use the paddles as a straight key: either lever (or both, squeezed) keys
-the sidetone directly, with no iambic timing or memory. The RC paddle
-filter still applies. This is the software equivalent of the 8044ABM's
-separate
+.B \-\-straight
+Use the paddles as a straight key: either lever (or both, squeezed) keys the
+sidetone directly, with no iambic timing or memory. The RC paddle filter still
+applies. This is the software equivalent of the 8044ABM's separate
 .B MAN. KEY
-input. The
-.B decode
-option is ignored in this mode.
+input.
+.B \-\-decode
+cannot be combined with this option.
 .TP
-.B mix\-mic
+.B \-\-decode
+Print each keyed symbol decoded to text, without newlines. Unknown symbols are
+ignored, and a pause longer than seven dits prints a space.
+.TP
+.BI \-\-level " PERCENT"
+Sidetone level as a percentage of full scale, 0\(en100 (default 70 or
+.BR CW_KEYER_LEVEL ).
+.TP
+.BI \-\-weight " MS"
+Weighting in milliseconds, \(en25\(en25 (default 0 or
+.BR CW_KEYER_WEIGHT_MS ).
+A constant time is added to every mark and removed from the following space,
+so the element period and character speed are unchanged.
+.TP
+.BI \-\-debounce " MS"
+Paddle RC filter time constant in milliseconds, 0\(en50 (default 10 or
+.BR CW_KEYER_DEBOUNCE_MS ).
+Set to 0 to disable the filter.
+.SS Audio
+.TP
+.B \-\-mix\-mic
 Mix the microphone into the sidetone, so that one output device carries both
 and a voice application can take the operator and the sidetone from a single
-input. macOS only; use the
+input. macOS only; use
 .B CW_AUDIO_DEVICE
 and
 .B CW_MIX_MIC_DEVICE
-variables to say where the mix goes and which microphone to capture, and
+to say where the mix goes and which microphone to capture, and
 .B CW_MIX_MONITOR
-to hear the sidetone locally. The microphone is ducked by the sidetone rather
-than the sum being clipped, so the tone stays clean and the mix cannot
-overload. On Linux
+to hear the sidetone locally. On Linux
 .BR cw-mic-mix (1)
-does the same with PulseAudio instead.
-.SH OPTIONS
-.TP
-.BR \-\-help ", " \-h
-Print a short usage message and exit.
-.TP
-.BR \-\-version ", " \-V
-Print the version and exit.
-.TP
-.BR \-\-list\-devices ", " \-L
-List every readable
-.B /dev/input/event*
-device, grouped as
-.BR unknown ,
-.BR keyboard ,
+does the same with PulseAudio.
+.PP
+Values may be written as
+.BI \-\-wpm " 25"
 or
-.BR paddle .
-Groups are ordered so paddles come last, nearest the shell prompt, and the
-devices in each group are sorted by event number. A device that reports
-the default LEFTCTRL/RIGHTCTRL paddle keys is called out. The category
-names are colored only when standard output is a terminal; set
-.B NO_COLOR
-to disable them. The
-.B keyboard
+.BR \-\-wpm=25 ;
+short options may be
+.BI \-w " 25"
 or
-.B paddle
-guess is a hint only and is not used to select a device.
-.TP
-.BR \-\-list\-audio\-devices ", " \-A
-List the audio devices the platform accepts, with the names its audio
-settings use.  On Linux these are ALSA PCM names for
-.BR CW_ALSA_DEVICE ,
-with a reminder that PulseAudio/PipeWire sinks are selected through
-.BR PULSE_SINK .
-On macOS these are the names and UIDs, with the nominal rate, current
-buffer, and system defaults, for
-.BR CW_AUDIO_DEVICE ,
-.BR CW_MIX_MIC_DEVICE ,
-and
-.BR CW_MIX_MONITOR .
-.TP
-.B \-\-setup
-Interactively choose the paddle device by tapping the dot lever and then
-the dash lever. This is also what a bare
-.B cwkeyer
-invocation does on an interactive terminal. The device and both key codes
-are learned from the taps, so the
-.I /dev/input/eventX
-name is not needed. If exactly one known paddle adapter is present, the tap
-test is skipped and the adapter's table default keys are used instead.
-Starts with the default speed, pitch, level, and
-weighting, all of which remain adjustable at runtime. A device that looks
-like a normal keyboard defaults to
-.B nograb
-and a paddle defaults to exclusive grab. If both taps use the same key,
-.B cwkeyer
-offers straight-key mode. Requires an interactive terminal on standard
-input.
+.BR \-w25 .
+.B \-\-
+ends option parsing. Command-line options override the environment, and the
+environment overrides the built-in defaults. Usage errors exit 2; runtime
+failures exit 1.
 .SH ENVIRONMENT
-The side tone settings apply everywhere; the audio output variables are per
-platform.
+Command-line options override these variables; these variables override the
+built-in defaults. The sidetone settings apply everywhere; the audio output
+variables are per platform.
 .TP
 .B CW_ALSA_DEVICE
 Linux only. ALSA PCM to open (default
 .BR pulse ).
+.B cwkeyer \-\-list\-audio
+prints the PCM names.
 .TP
 .B CW_ALSA_LATENCY_US
-Linux only. Requested ALSA latency in microseconds (default 20000). ALSA may negotiate
-a different buffer and period; the achieved values are printed at startup.
+Linux only. Requested ALSA latency in microseconds (default 20000). ALSA
+may negotiate a different buffer and period; the achieved values are printed
+at startup.
 .TP
 .B CW_KEYER_LEVEL
-Sidetone level as a percentage of full scale, 0\(en100 (default 70). The
-level can also be changed while running with
+Sidetone level as a percentage of full scale, 0\(en100 (default 70). Can also
+be set with
+.BR \-\-level .
+The level can be changed while running with
 .B 9
 and
 .BR 0 .
 .TP
 .B CW_KEYER_DEBOUNCE_MS
-Paddle RC filter time constant in milliseconds, 0\(en50 (default 10). The
-8044's recommended 1 M\(*W/0.01 \(*mF network is about 10 ms. Set to 0 to
-disable the filter; a shorter value gives a snappier response at high speed.
+Paddle RC filter time constant in milliseconds, 0\(en50 (default 10). Can
+also be set with
+.BR \-\-debounce .
+The 8044's recommended 1 M\(*W/0.01 \(*mF network is about 10 ms. Set to 0
+to disable the filter; a shorter value gives a snappier response at high
+speed.
 .TP
 .B CW_KEYER_WEIGHT_MS
-Weighting in milliseconds, \(en25\(en25 (default 0, strict ITU timing). A
-constant time is added to every mark and removed from the space that
+Weighting in milliseconds, \(en25\(en25 (default 0, strict ITU timing). Can
+also be set with
+.BR \-\-weight .
+A constant time is added to every mark and removed from the space that
 follows it, so the element period and the character speed are unchanged.
 This matches the 8044ABM's RC weight control, which stretches elements by
 a fixed amount rather than a fixed ratio, so its relative effect depends on
@@ -273,12 +291,12 @@ warning, so a bare run still plays.
 macOS only. Output device on which to play the sidetone alone, so the operator
 can hear what they are sending while the mixed stream goes to a voice
 application. Independent of
-.BR mix\-mic .
+.BR \-\-mix\-mic .
 Runs about one device buffer behind the output.
 .TP
 .B CW_MIX_MIC_DEVICE
 macOS only, with
-.BR mix\-mic .
+.BR \-\-mix\-mic .
 Input device by name or UID to capture (default: the system input).
 Capturing needs the Microphone permission, which macOS attributes to the
 program that launched the keyer.
@@ -288,10 +306,12 @@ macOS only. Output device by name or UID, which pins it. The default
 .RB ( default )
 tracks the system output, including later changes, so headphones plugged in
 mid-session take the sidetone with them.
+.B cwkeyer \-\-list\-audio
+prints the names and UIDs.
 .TP
 .B NO_COLOR
 If set, do not color the output of
-.B \-\-list\-devices
+.B \-\-list\-inputs
 or the setup wizard.
 .SH RUNTIME CONTROLS
 If standard input is a readable terminal or pipe,
@@ -324,7 +344,7 @@ Pending keys in a pipe are consumed before the keyer treats its closed
 writer as end-of-input. Changes take effect on the next element. On a
 terminal the current settings are shown on a single status line that is
 rewritten in place rather than appended line by line. The controls are read from
-standard input, not from the evdev paddle device, so avoid mapping a paddle
+standard input, not from the paddle device, so avoid mapping a paddle
 to one of these keys.
 .SH SIGNALS
 .B SIGINT
@@ -354,16 +374,25 @@ latency is always reported.
 .SH EXAMPLES
 .TP
 .B cwkeyer /dev/input/event3
-12 WPM, 800 Hz on a keyboard.
+12 WPM, 800 Hz on a keyboard, with exclusive access when possible.
 .TP
-.B cwkeyer /dev/input/event3 25 700
+.B cwkeyer /dev/input/event3 --wpm 25 --freq 700
 25 WPM at 700 Hz.
 .TP
-.B cwkeyer /dev/input/event3 25 700 COMMA DOT nograb decode
+.B cwkeyer --device /dev/input/event3 --dit COMMA --dah DOT --no-grab --decode
 Remap the paddles, do not grab the device, and decode to text.
 .TP
-.B cwkeyer /dev/input/eventX straight
+.B cwkeyer --setup --wpm 25 --freq 700
+Choose the device by tapping, then start at 25 WPM, 700 Hz.
+.TP
+.B cwkeyer /dev/input/eventX --straight
 Use the paddles as a straight key instead of an iambic keyer.
+.TP
+.B cwkeyer --list-inputs
+List the readable paddle and keyboard devices.
+.TP
+.B cwkeyer --list-audio
+List the audio devices and their names or UIDs.
 .SH FILES
 The files below are Linux; on macOS the paddle is a HID device with no node
 (see
