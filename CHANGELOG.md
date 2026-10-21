@@ -61,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the mix goes and `CW_MIX_MIC_DEVICE` which microphone to capture. The two
   units run on their own clocks, so captured samples cross a ring buffer:
   overflow drops the oldest, and a dry ring holds the last sample rather than
-  stepping to zero. Missing microphone, missing permission or a refused seek
+  stepping to zero. Missing microphone, missing permission or a refused seize
   all fall back to an ordinary sidetone with a warning. On Linux `mix-mic` is
   refused with a pointer to `cw-mic-mix.sh`.
 
