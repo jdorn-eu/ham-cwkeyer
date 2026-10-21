@@ -5,7 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [2.0.0] - 2026-10-21
+
+This release changes the command-line interface; see the first Changed entry.
 
 ### Added
 
@@ -280,5 +282,6 @@ adapters (or a keyboard), implementing the Curtis 8044 type B
 - `docs/validation.md` records why the core is believed to match the
   8044ABM type B behaviour.
 
+[2.0.0]: https://github.com/jdorn-eu/ham-cwkeyer/releases/tag/v2.0.0
 [1.0.1]: https://github.com/jdorn-eu/ham-cwkeyer/releases/tag/v1.0.1
 [1.0.0]: https://github.com/jdorn-eu/ham-cwkeyer/releases/tag/v1.0.0
