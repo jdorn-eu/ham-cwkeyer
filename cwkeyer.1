@@ -6,7 +6,7 @@ cwkeyer \- low-latency iambic CW sidetone keyer
 .B cwkeyer
 .br
 .B cwkeyer
-.I /dev/input/eventX
+.I DEVICE
 .RI [ wpm ]
 .RI [ freq_hz ]
 .RI [ dit_key ]
@@ -89,8 +89,16 @@ to choose the output by name or UID. Latency is the output device's buffer,
 and the achieved value is printed at startup and at exit.
 .SH ARGUMENTS
 .TP
+.I DEVICE
+The input device to read. On Linux this is an evdev node such as
+.IR /dev/input/event3 ;
+on macOS it is
+.I vendor:product:location
+as printed by
+.BR \-\-list\-devices .
+.TP
 .I /dev/input/eventX
-The evdev device to read (Linux; see
+The Linux evdev device to read (see
 .BR MACOS ). Use
 .BR evtest (8)
 or

@@ -63,6 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `--help` takes the `mix-mic` paragraph from the macOS backend. Linux help
+  points at `cw-mic-mix.sh` instead of advertising a keyword it refuses. The
+  README's design description and timing notes now name the input and audio
+  backends rather than evdev and ALSA, and its Linux-only install, run, and
+  environment material is labelled as such.
 - macOS now uses the output device's nominal sample rate for the client format,
   falling back to 48 kHz if the unit rejects it, instead of pinning 48 kHz and
   relying on a hidden HAL conversion. The negotiated rate is what the renderer

@@ -1657,7 +1657,13 @@ static int run_cli_tests(void)
 
     /* --help is an answer, not an error: it goes to stdout and exits 0. */
     failures += cli_expect("--help", 2, help_argv, 0, "usage:", NULL);
+#if defined(__APPLE__)
     failures += cli_expect("--help", 2, help_argv, 0, "mix-mic", NULL);
+#else
+    /* Linux points at the helper instead of advertising a keyword it refuses. */
+    failures += cli_expect("--help", 2, help_argv, 0, "cw-mic-mix.sh",
+                           "mix-mic");
+#endif
 
     failures += cli_expect("--bogus", 2, bad_opt, 1, "unknown option '--bogus'",
                            NULL);

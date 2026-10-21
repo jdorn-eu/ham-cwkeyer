@@ -849,6 +849,13 @@ void input_backend_usage(FILE *out, usage_part_t part, const char *prog)
               "e.g. 224 for left control.\n", out);
         break;
 
+    case USAGE_KEYWORDS:
+        fputs("  mix-mic   Mix the microphone into the sidetone, so one output\n"
+              "            carries both and a voice application can take them\n"
+              "            from a single input. See CW_MIX_MIC_DEVICE and\n"
+              "            CW_MIX_MONITOR below.\n", out);
+        break;
+
     case USAGE_DEVICE_OPTS:
         fputs("            List HID keyboards, grouped as unknown, keyboard,\n"
               "            or paddle, and exit. Colors are used only on a\n"

@@ -342,11 +342,9 @@ static void usage(FILE *out, const char *prog)
         "  straight  Use the paddles as a straight key: either lever\n"
         "            keys the sidetone directly, with no iambic timing\n"
         "            or memory. The RC paddle filter still applies.\n"
-        "            decode is ignored in this mode.\n"
-        "  mix-mic   Mix the microphone into the sidetone, so one output\n"
-        "            carries both and a voice application can take them\n"
-        "            from a single input. macOS only; on Linux the\n"
-        "            cw-mic-mix.sh helper does the same with PulseAudio.\n"
+        "            decode is ignored in this mode.\n");
+    input_backend_usage(out, USAGE_KEYWORDS, prog);
+    fprintf(out,
         "  --help    Print this help and exit.\n"
         "  --version Print the version and exit.\n"
         "  --list-devices, -L\n");

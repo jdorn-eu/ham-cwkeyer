@@ -142,6 +142,7 @@ typedef enum {
     USAGE_DEVICE_ARG,   /* the device placeholder on the usage line */
     USAGE_EXAMPLES,     /* example command lines */
     USAGE_KEYNOTE,      /* where raw key codes come from */
+    USAGE_KEYWORDS,     /* backend-only keywords such as mix-mic */
     USAGE_DEVICE_OPTS,  /* the --list-devices and --setup paragraphs */
 } usage_part_t;
 

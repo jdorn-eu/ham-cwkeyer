@@ -689,6 +689,10 @@ void input_backend_usage(FILE *out, usage_part_t part, const char *prog)
               "evdev key codes.\n", out);
         break;
 
+    case USAGE_KEYWORDS:
+        /* Mic mixing is cw-mic-mix.sh's job on Linux, not a keyword. */
+        break;
+
     case USAGE_DEVICE_OPTS:
         fputs("            List readable /dev/input/event* devices, grouped as\n"
               "            unknown, keyboard, or paddle, and exit. Colors are\n"

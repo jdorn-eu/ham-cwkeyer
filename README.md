@@ -4,25 +4,29 @@
 
 Low-latency little C utility to be used with HRS (Ham Radio Solution)'s VBand adapter working as an iambic keyer in software.
 ## Design description
-- Reads evdev (/dev/input/eventX) input from adapter or alternatively keyboard input
+- Reads a paddle adapter (or a keyboard) through the platform input backend:
+  evdev on Linux, IOKit HID on macOS
 - Runs a Curtis 8044 type B iambic keyer (the Accu-keyer behaviour) with dot/dash paddle memory
 - Runtime speed, pitch, and sidetone level controls from stdin while keying
 - Renders each mark and its raised-cosine attack/release at PCM sample boundaries; late input/audio scheduling may still lengthen gaps
-- Sends the sine wave to ALSA's `pulse` device by default, with `PULSE_SINK=cw_out` for the mic-mixing setup
+- Plays the sine wave through the platform audio backend: ALSA (PulseAudio/
+  PipeWire) on Linux, CoreAudio on macOS. On Linux the default PCM is `pulse`
+  with `PULSE_SINK=cw_out` for the mic-mixing setup; on macOS the sidetone
+  follows the system output.
 
 ### Keying and audio timing
 
-The evdev thread tracks paddle state (including presses that land between keyer samples) and recovers from dropped input events. The keyer thread runs a small state machine and watches the paddles through each mark and its following one-dit space, using monotonic deadlines for the nominal 1:3 dit/dah timing. With `decode` off, it does no Morse decoding or terminal output.
+The input thread tracks paddle state (including presses that land between keyer samples) and recovers from dropped input events. The keyer thread runs a small state machine and watches the paddles through each mark and its following one-dit space, using monotonic deadlines for the nominal 1:3 dit/dah timing. With `decode` off, it does no Morse decoding or terminal output.
 
 Paddle inputs are filtered with a digital approximation of the 8044's external RC network: the recommended 1 MΩ/0.01 µF network has a time constant of about 10 ms. The filter runs in the keyer's own time base, so contact bounce is smoothed and normally cannot inject extra elements. `CW_KEYER_DEBOUNCE_MS` sets the RC time constant (default 10 ms; 0 disables the filter). Lower it, for example to 5 ms, for a snappier response at high speed. As with the real RC network, a legitimate press shorter than the filter's threshold time may not be recognized; at high speeds use a shorter setting or 0.
 
-The keyer implements the type B (Accu-keyer) behaviour that most transceivers mean by "Curtis mode B". The dot and dash latches are set whenever their paddle closes and cleared at the end of that element if the paddle is open. Because the latches drive element selection, releasing a squeeze leaves the opposite latch set, so one extra element is keyed: squeeze and release during the second dash and you get `-.-.` (C). A held paddle repeats its element, a held squeeze alternates, and a tap of the opposite paddle during an element is remembered (the "N"/"A" tests). When both levers close within the same sample, the keyer starts with whichever was closed first (the evdev layer preserves the press order). Type A is deliberately out of scope for this project.
+The keyer implements the type B (Accu-keyer) behaviour that most transceivers mean by "Curtis mode B". The dot and dash latches are set whenever their paddle closes and cleared at the end of that element if the paddle is open. Because the latches drive element selection, releasing a squeeze leaves the opposite latch set, so one extra element is keyed: squeeze and release during the second dash and you get `-.-.` (C). A held paddle repeats its element, a held squeeze alternates, and a tap of the opposite paddle during an element is remembered (the "N"/"A" tests). When both levers close within the same sample, the keyer starts with whichever was closed first (the input backend preserves the press order). Type A is deliberately out of scope for this project.
 
 The `straight` startup option turns the iambic core off and passes either paddle (or both, squeezed) through as a manual key: the sidetone follows the contact with the same raised-cosine ramp, and the RC paddle filter still applies. This is the software equivalent of the 8044ABM's separate `MAN. KEY` input. `decode` is ignored in this mode.
 
 Optional weighting matches the 8044ABM's weight control, which the application note describes as stretching each element "by a constant amount regardless of what speed is being used". `CW_KEYER_WEIGHT_MS` (default `0`, range `-25`–`25`) adds that constant to every mark and removes it from the following space, so the element period and the character speed are unchanged: a `+10` setting makes marks heavier and spaces lighter, `-10` does the reverse. Because it is a fixed time, not a ratio, its relative effect grows with speed — exactly as the chip's RC network behaves — so a setting that sounds right at one speed may not at another. `0` is strict ITU timing. The supported speed range is 1–40 WPM: even at 40 WPM a dit lasts 30 ms, leaving at least 5 ms for both the mark and space at the maximum ±25 ms weighting. Faster internal renderer stress tests are not a promise that the 10 ms input filter can capture very short high-speed taps.
 
-For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate ALSA actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range and can be changed at startup with `CW_KEYER_LEVEL` or while running (see below). The audio renderer enforces the intended inter-element gap (one dit, reduced or extended by the weighting setting); late delivery cannot shorten a mark, but scheduling delays or ALSA underruns can make a gap longer. ALSA buffering also adds audible latency, which is separate from the generated mark length.
+For each element, the keyer queues its start time and duration. The audio thread converts that duration to frames at the **sample rate the audio backend actually selected**, then generates the entire mark from sample counts rather than polling a key-down flag. Its raised-cosine attack and release fit *inside* the mark: normally 5 ms each, reduced to at most half a dit at high speeds. The tone defaults to 70% of the 16-bit PCM range and can be changed at startup with `CW_KEYER_LEVEL` or while running (see below). The audio renderer enforces the intended inter-element gap (one dit, reduced or extended by the weighting setting); late delivery cannot shorten a mark, but scheduling delays or audio interruptions can make a gap longer. The backend's buffering also adds audible latency, which is separate from the generated mark length.
 
 The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements.
 
@@ -96,7 +100,7 @@ GPL-3.0-or-later; see `LICENSE`.
 
 Mode behaviour follows the primary sources: the Curtis Electro Devices *8044 Series Keyer-on-a-Chip Application Note* and Karl Fischer (DJ5IL), *All About Squeeze-Keying*. The latter distinguishes the true type A edge-memory rule from the Accu-keyer type B latch rule; this project implements and verifies only the Accu-keyer/type B behaviour, against UnixCW libcw on 200k random paddle schedules and eight third-party keyer variants (see `docs/validation.md`).
 
-## Build
+## Build (Linux)
 ```
 sudo dnf install gcc alsa-lib-devel
 make        # strict build (-Werror plus a broad warning set)
@@ -141,6 +145,12 @@ Three things differ from Linux, all of them forced by the platform:
   fails falls back with a warning. Without it the levers also reach the
   foreground application, which is harmless for a dedicated adapter and noisy
   on a normal keyboard.
+- **Launchers, app bundles, and `sudo`.** macOS attributes Input Monitoring
+  and Microphone permission to the process that launches the keyer, usually
+  your terminal. If you start it from a script, a launcher, or an app bundle,
+  grant the permission to that program instead. `sudo` changes the environment
+  and the TCC identity too, so prefer `--setup` (which defaults to `nograb`
+  where a seize is impossible) over running the keyer as root.
 - **Latency is the device buffer.** CoreAudio asks for one device buffer per
   render callback (512 frames, 10.7 ms on the built-in speakers) and the
   measured output latency is about 12 ms. The client format uses the output
@@ -177,9 +187,10 @@ make install PREFIX=/usr            # or another prefix
 make install DESTDIR=/tmp/stage PREFIX=/usr   # for packagers
 ```
 
-This installs `cwkeyer`, the `cw-mic-mix` helper, and the `cwkeyer(1)` and `cw-mic-mix(1)` man pages. `make uninstall` removes them. `make dist` produces a `ham-cwkeyer-<version>.tar.gz` from the current commit; the version comes from `git describe` (a `-dirty` suffix is stripped for the tarball), or override it with `make VERSION=1.2.3`. Run `cwkeyer --version` to see the version a binary was built with.
+This installs `cwkeyer` and the `cwkeyer(1)` man page everywhere, plus the
+`cw-mic-mix` helper and its man page on Linux. `make uninstall` removes them. `make dist` produces a `ham-cwkeyer-<version>.tar.gz` from the current commit; the version comes from `git describe` (a `-dirty` suffix is stripped for the tarball), or override it with `make VERSION=1.2.3`. Run `cwkeyer --version` to see the version a binary was built with.
 
-In order for your user session to be able to access the adapter input, set proper udev rules:
+On Linux, in order for your user session to be able to access the adapter input, set proper udev rules:
 ```
 lsusb   # find the adapter's vendor:product ID
 ```
@@ -191,7 +202,11 @@ SUBSYSTEM=="input", ATTRS{idVendor}=="XXXX", ATTRS{idProduct}=="YYYY", MODE="066
 sudo usermod -aG input $USER   # re-login after this
 ```
 
-## Run
+## Run (Linux)
+
+For macOS, use the examples in the macOS section above: the device is
+`vendor:product:location` and there is no udev rule.
+
 First check for the correct device: `sudo libinput list-devices` or `sudo evtest` are your friend. If you want to use your keyboard, that's usually `/dev/input/event3`. In that case, add the `nograb` parameter so you can still send SIGINT to close the program.
 ```
 ./cwkeyer                                      # on a terminal: tap-to-select setup
@@ -257,18 +272,18 @@ If stdin is a readable terminal or pipe, the keyer accepts single-key controls w
 A pipe's final controls are read even if its writer has already closed. Speed, pitch, level, and weighting changes take effect on the next element. On a terminal, the current settings are shown on a single status line that is rewritten in place rather than appended line by line. The startup values come from the command line, `CW_KEYER_LEVEL`, and the usual environment variables. These control keys are read from stdin, not from the evdev paddle device, so avoid remapping a paddle to one of them.
 
 ## Environment
-- `CW_ALSA_DEVICE` ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is tried as `cw_out`, falling back to the system default sink if that one is unavailable. `./cwkeyer --list-audio-devices` prints the PCM names.
-- `CW_ALSA_LATENCY_US` Requested ALSA latency in microseconds. Default: `20000` (20 ms). ALSA may negotiate a different buffer/period; the achieved values are printed at startup. Smaller buffers may reduce latency but increase underrun risk.
+- `CW_ALSA_DEVICE` Linux only. ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is tried as `cw_out`, falling back to the system default sink if that one is unavailable. `./cwkeyer --list-audio-devices` prints the PCM names.
+- `CW_ALSA_LATENCY_US` Linux only. Requested ALSA latency in microseconds. Default: `20000` (20 ms). ALSA may negotiate a different buffer/period; the achieved values are printed at startup. Smaller buffers may reduce latency but increase underrun risk.
 - `CW_KEYER_LEVEL` Sidetone level, percent of full scale, `0`–`100`. Default: `70`. The level can also be changed while running with `9` and `0`.
 - `CW_KEYER_WEIGHT_MS` Weighting, `-25`–`25` ms. Default: `0` (strict ITU timing). A constant time added to each mark and removed from the following space. The weighting can also be changed while running with `,` and `.`.
 - `CW_KEYER_DEBOUNCE_MS` Paddle RC filter time constant in milliseconds, `0`–`50`. Default: `10`; `0` disables the filter. The 8044's recommended 1 MΩ/0.01 µF network is about 10 ms. A press shorter than the filter's threshold time may not be recognized; lower the value for high-speed sending.
-- `PULSE_SINK` Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, the keyer tries `cw_out`, the combined sink created by `cw-mic-mix.sh`. If that sink is unavailable, it falls back to the system default sink with a warning, so a bare run still plays; set this explicitly to choose a different sink.
+- `PULSE_SINK` Linux only. Pulse sink the keyer audio goes to. If the device is `pulse` and this is unset or empty, the keyer tries `cw_out`, the combined sink created by `cw-mic-mix.sh`. If that sink is unavailable, it falls back to the system default sink with a warning, so a bare run still plays; set this explicitly to choose a different sink.
 - `CW_AUDIO_DEVICE` macOS only. Output device name or UID. Default: follow the system output, so the sidetone moves with everything else. `./cwkeyer --list-audio-devices` prints the names.
 - `CW_MIX_MIC_DEVICE` macOS only. Microphone captured by `mix-mic`. Default: the system input.
 - `CW_MIX_MONITOR` macOS only. Output device that plays the sidetone alone while the mixed stream goes to a voice application.
 - `NO_COLOR` If set, `--list-devices` and the setup wizard do not use colors.
 
-## Combine with mic input
+## Combine with mic input (Linux)
 
 ```
 ./cw-mic-mix.sh                                # auto-detects default mic + output
