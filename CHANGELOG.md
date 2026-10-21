@@ -128,6 +128,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The CoreAudio capture and monitor rings now have one owner per cursor: the
+  writer never advances the reader's index, and the slots are atomic, so a
+  ring that is lapped cannot race the reader or resurrect stale frames.  The
+  render path also covers every frame of a buffer larger than the 4096-frame
+  scratch, and refuses (and counts) an unexpected buffer list instead of
+  writing into it.  The microphone unit is bounded to the scratch size so an
+  oversized capture slice is counted rather than silently skipped.
 - The shared setup wizard no longer names Linux devices in its failure messages.
   It uses the backend's own device noun and permission hint, so macOS says
   "HID keyboard" and points at Input Monitoring instead of udev.

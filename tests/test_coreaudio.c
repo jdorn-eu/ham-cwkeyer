@@ -13,6 +13,9 @@ int cwkeyer_program_main(int argc, char **argv);
 #include "../cwkeyer.c"
 #undef main
 
+/* One chunk past the mixing scratch, to exercise the chunked path. */
+#define LARGE_SLICE_FRAMES (MIX_SLICE_FRAMES + 16)
+
 static int failures;
 
 static void expect(int cond, const char *what)
@@ -51,6 +54,7 @@ static void reset_audio(void)
     ca_last_frames = 0;
     ca_gaps = 0;
     ca_slice_frames = 0;
+    atomic_store(&ca_bad_buffers, 0);
     ca_delay_min = 1e9;
     ca_delay_max = 0;
     ca_delay_sum = 0;
@@ -257,6 +261,27 @@ static void test_odd_buffer_lists(void)
     make_list(&list, NULL, 64);
     expect(ca_render(NULL, NULL, &ts, 0, 64, &list) == noErr,
            "a null buffer returned an error");
+
+    /* A buffer that is too small, or not mono, must be left alone too. */
+    memset(a, 0x5a, sizeof(a));
+    make_list(&list, a, 64);
+    list.mBuffers[0].mDataByteSize = 64 * 2 - 2;
+    expect(ca_render(NULL, NULL, &ts, 0, 64, &list) == noErr,
+           "a short buffer returned an error");
+    touched = 0;
+    for (size_t i = 0; i < 64; i++)
+        touched += a[i] != 0x5a5a;
+    expect(touched == 0, "a short buffer was written to");
+
+    memset(a, 0x5a, sizeof(a));
+    make_list(&list, a, 64);
+    list.mBuffers[0].mNumberChannels = 2;
+    expect(ca_render(NULL, NULL, &ts, 0, 64, &list) == noErr,
+           "a non-mono buffer returned an error");
+    touched = 0;
+    for (size_t i = 0; i < 64; i++)
+        touched += a[i] != 0x5a5a;
+    expect(touched == 0, "a non-mono buffer was written to");
 }
 
 /* ---- mic mixing ---- */
@@ -265,7 +290,8 @@ static void reset_ring(ring_t *ring)
 {
     atomic_store(&ring->written, 0);
     atomic_store(&ring->read, 0);
-    memset(ring->buf, 0, sizeof(ring->buf));
+    for (size_t i = 0; i < RING_FRAMES; i++)
+        atomic_store_explicit(&ring->buf[i], 0, memory_order_relaxed);
     ring->dropped = 0;
     ring->held = 0;
 }
@@ -369,10 +395,80 @@ static void test_ring(void)
 
         ring_put(&mic_ring, &v, 1);
     }
-    expect(mic_ring.dropped == 10, "the ring did not drop the oldest samples");
     expect(ring_take(&mic_ring, out, 1) == 1,
            "the ring was empty after an overrun");
+    expect(mic_ring.dropped == 10, "the ring did not drop the oldest samples");
     expect(out[0] == 10, "the ring kept the wrong end after an overrun");
+}
+
+typedef struct {
+    ring_t *ring;
+    unsigned int total;
+    int timed_out;
+} ring_probe_t;
+
+static void *ring_producer(void *arg)
+{
+    ring_probe_t *p = arg;
+    int16_t block[64];
+
+    for (unsigned int i = 0; i < p->total; ) {
+        unsigned int n = p->total - i < 64 ? p->total - i : 64;
+
+        for (unsigned int j = 0; j < n; j++)
+            block[j] = (int16_t)((i + j) % 1000);
+        ring_put(p->ring, block, (size_t)n);
+        i += n;
+        if ((i % 4096) == 0)
+            sleep_ns(100000);
+    }
+    return NULL;
+}
+
+static void *ring_consumer(void *arg)
+{
+    ring_probe_t *p = arg;
+    int16_t block[128];
+    uint64_t got = 0;
+    const int64_t deadline = mono_ns() + 5000000000LL;
+
+    while (got + p->ring->dropped < p->total) {
+        size_t n = ring_take(p->ring, block, sizeof(block) / sizeof(block[0]));
+
+        got += n;
+        if (n == 0) {
+            if (mono_ns() >= deadline) {
+                p->timed_out = 1;
+                break;
+            }
+            sleep_ns(100000);
+        }
+    }
+    return NULL;
+}
+
+/* A producer and a consumer on the ring at once: the indices must stay
+ * consistent and the slots must not race. */
+static void test_ring_threaded(void)
+{
+    enum { TOTAL = 200000 };
+    ring_probe_t p = { &mic_ring, TOTAL, 0 };
+    pthread_t producer, consumer;
+    int has_consumer, has_producer;
+
+    reset_mix();
+    has_consumer = pthread_create(&consumer, NULL, ring_consumer, &p) == 0;
+    has_producer = pthread_create(&producer, NULL, ring_producer, &p) == 0;
+    expect(has_consumer && has_producer,
+           "could not create the ring test threads");
+    if (has_producer)
+        pthread_join(producer, NULL);
+    if (has_consumer)
+        pthread_join(consumer, NULL);
+
+    expect(!p.timed_out, "the threaded ring test timed out");
+    expect(atomic_load(&mic_ring.read) == (uint64_t)TOTAL,
+           "the threaded ring did not consume every frame");
 }
 
 /* The whole path: captured samples in, sidetone plus microphone out. */
@@ -414,6 +510,35 @@ static void test_mix_in_render(void)
            "a dry mic ring did not hold its last sample");
     expect(mic_ring.held == 380, "the held-sample count is wrong");
 
+    mix_mic_mode = 0;
+}
+
+/* A slice larger than the scratch must still mix the microphone to the end. */
+static void test_large_mix_slice(void)
+{
+    int16_t buf[LARGE_SLICE_FRAMES];
+    AudioBufferList list;
+    AudioTimeStamp ts;
+
+    reset_audio();
+    reset_mix();
+
+    for (size_t i = 0; i < LARGE_SLICE_FRAMES; i++) {
+        int16_t v = 1000;
+
+        ring_put(&mic_ring, &v, 1);
+    }
+
+    mix_mic_mode = 1;
+    make_list(&list, buf, LARGE_SLICE_FRAMES);
+    make_time(&ts, 0);
+    expect(ca_render(NULL, NULL, &ts, 0, LARGE_SLICE_FRAMES, &list) == noErr,
+           "render returned an error for a large slice");
+    expect(buf[0] == 1000, "the microphone did not reach the first frame");
+    expect(buf[LARGE_SLICE_FRAMES - 1] == 1000,
+           "the microphone did not reach the tail of a large slice");
+    expect(mic_ring.dropped == 0 && mic_ring.held == 0,
+           "a large slice lost or invented capture frames");
     mix_mic_mode = 0;
 }
 
@@ -473,13 +598,34 @@ static void test_monitor_render(void)
     list.mBuffers[0].mData = NULL;
     expect(monitor_render(NULL, NULL, &ts, 0, 8, &list) == noErr,
            "the monitor returned an error for a null buffer");
+
+    /* A slice larger than the scratch must be filled to the last frame. */
+    {
+        int16_t large[LARGE_SLICE_FRAMES];
+
+        reset_mix();
+        for (size_t i = 0; i < LARGE_SLICE_FRAMES; i++) {
+            int16_t v = (int16_t)(i % 1000);
+
+            ring_put(&monitor_ring, &v, 1);
+        }
+        make_list(&list, large, LARGE_SLICE_FRAMES);
+        expect(monitor_render(NULL, NULL, &ts, 0, LARGE_SLICE_FRAMES,
+                              &list) == noErr,
+               "the monitor returned an error for a large slice");
+        for (size_t i = 0; i < LARGE_SLICE_FRAMES; i++)
+            expect(large[i] == (int16_t)(i % 1000),
+                   "the monitor did not fill the tail of a large slice");
+    }
 }
 
 int main(void)
 {
     test_mix_block();
     test_ring();
+    test_ring_threaded();
     test_mix_in_render();
+    test_large_mix_slice();
     test_silence_and_level();
     test_mark_ends();
     test_dropout_detection();

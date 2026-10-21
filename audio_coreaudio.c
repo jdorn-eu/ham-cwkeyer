@@ -58,6 +58,8 @@ static double ca_delay_min = 1e9, ca_delay_max, ca_delay_sum;
 static unsigned int ca_delay_n;
 static uint32_t ca_slice_frames;
 static UInt32 ca_device_buffer;
+static _Atomic unsigned int ca_bad_buffers;
+static unsigned int ca_oversized_slices;
 
 #define CA_MAX_GAP_NOTES 4
 static double ca_gap_expect[CA_MAX_GAP_NOTES];
@@ -95,10 +97,12 @@ static double host_seconds(uint64_t ticks)
 #define MIX_SLICE_FRAMES 4096u          /* scratch for one callback */
 
 typedef struct {
-    int16_t buf[RING_FRAMES];
+    /* Slots are atomic so a writer that laps the reader overwrites an old
+     * sample instead of racing the read; the indices preserve the order. */
+    _Atomic int16_t buf[RING_FRAMES];
     _Atomic uint64_t written;           /* monotonic; index by modulo */
     _Atomic uint64_t read;
-    unsigned int dropped;               /* frames lost to overruns */
+    unsigned int dropped;               /* frames lost to overruns (reader) */
     unsigned int held;                  /* frames filled in on a dry ring */
 } ring_t;
 
@@ -115,19 +119,15 @@ static int16_t monitor_last;
 static void ring_put(ring_t *ring, const int16_t *src, size_t n)
 {
     uint64_t w = atomic_load_explicit(&ring->written, memory_order_relaxed);
-    uint64_t r;
 
     for (size_t i = 0; i < n; i++)
-        ring->buf[(size_t)((w + i) % RING_FRAMES)] = src[i];
-    atomic_store_explicit(&ring->written, w + n, memory_order_release);
+        atomic_store_explicit(&ring->buf[(size_t)((w + i) % RING_FRAMES)],
+                              src[i], memory_order_relaxed);
 
-    /* The reader fell more than a ring behind: drop the oldest. */
-    r = atomic_load_explicit(&ring->read, memory_order_relaxed);
-    if (w + n - r > RING_FRAMES) {
-        ring->dropped += (unsigned int)(w + n - r - RING_FRAMES);
-        atomic_store_explicit(&ring->read, w + n - RING_FRAMES,
-                              memory_order_relaxed);
-    }
+    /* Publish the new frames.  The reader owns `read`: if it falls a whole
+     * ring behind, it skips forward itself, so the writer never touches the
+     * consumer's cursor. */
+    atomic_store_explicit(&ring->written, w + n, memory_order_release);
 }
 
 /* Copy up to n samples out; returns how many were available. */
@@ -137,8 +137,16 @@ static size_t ring_take(ring_t *ring, int16_t *dst, size_t n)
     uint64_t w = atomic_load_explicit(&ring->written, memory_order_acquire);
     size_t got = 0;
 
+    /* The writer lapped us: keep the newest RING_FRAMES and count the rest.
+     * Only the consumer advances its own cursor. */
+    if (w - r > RING_FRAMES) {
+        ring->dropped += (unsigned int)(w - r - RING_FRAMES);
+        r = w - RING_FRAMES;
+    }
+
     while (got < n && r < w) {
-        dst[got++] = ring->buf[(size_t)(r % RING_FRAMES)];
+        dst[got++] = atomic_load_explicit(&ring->buf[(size_t)(r % RING_FRAMES)],
+                                          memory_order_relaxed);
         r++;
     }
     atomic_store_explicit(&ring->read, r, memory_order_release);
@@ -186,6 +194,16 @@ static void mix_block(int16_t *tone, const int16_t *mic, size_t n)
     }
 }
 
+/* Bound a unit's render slices so the fixed capture scratch is enough. */
+static void ca_set_max_slice(AudioUnit unit)
+{
+    UInt32 max_frames = MIX_SLICE_FRAMES;
+
+    (void)AudioUnitSetProperty(unit, kAudioUnitProperty_MaximumFramesPerSlice,
+                               kAudioUnitScope_Global, 0, &max_frames,
+                               sizeof(max_frames));
+}
+
 static OSStatus mic_render(void *refcon, AudioUnitRenderActionFlags *flags,
                            const AudioTimeStamp *ts, UInt32 bus,
                            UInt32 nframes, AudioBufferList *io)
@@ -196,8 +214,10 @@ static OSStatus mic_render(void *refcon, AudioUnitRenderActionFlags *flags,
     (void)bus;
     (void)io;
 
-    if (nframes > MIX_SLICE_FRAMES)
+    if (nframes > MIX_SLICE_FRAMES) {
+        ca_oversized_slices++;
         return noErr;
+    }
 
     /* The unit does not own a buffer for us: we supply one and pull. */
     buf.mNumberBuffers = 1;
@@ -217,25 +237,41 @@ static OSStatus monitor_render(void *refcon, AudioUnitRenderActionFlags *flags,
 {
     int16_t *out;
     UInt32 chans;
-    size_t n;
 
     (void)refcon;
     (void)flags;
     (void)ts;
     (void)bus;
 
-    if (!io || io->mNumberBuffers != 1 || !io->mBuffers[0].mData)
+    if (!io || io->mNumberBuffers != 1 || !io->mBuffers[0].mData) {
+        (void)atomic_fetch_add_explicit(&ca_bad_buffers, 1,
+                                        memory_order_relaxed);
         return noErr;
+    }
 
     out = (int16_t *)io->mBuffers[0].mData;
     chans = io->mBuffers[0].mNumberChannels;
-    n = nframes < MIX_SLICE_FRAMES ? nframes : MIX_SLICE_FRAMES;
+    if (chans == 0 ||
+        (size_t)io->mBuffers[0].mDataByteSize <
+            (size_t)nframes * (size_t)chans * sizeof(int16_t)) {
+        (void)atomic_fetch_add_explicit(&ca_bad_buffers, 1,
+                                        memory_order_relaxed);
+        return noErr;
+    }
 
-    ring_fill(&monitor_ring, monitor_buf, n, &monitor_last);
+    /* Cover every frame: a device buffer can be larger than the scratch. */
+    for (size_t off = 0; off < nframes; off += MIX_SLICE_FRAMES) {
+        size_t n = (size_t)nframes - off;
 
-    for (UInt32 i = 0; i < n; i++)
-        for (UInt32 c = 0; c < chans; c++)
-            out[i * chans + c] = monitor_buf[i];
+        if (n > MIX_SLICE_FRAMES)
+            n = MIX_SLICE_FRAMES;
+
+        ring_fill(&monitor_ring, monitor_buf, n, &monitor_last);
+
+        for (size_t i = 0; i < n; i++)
+            for (UInt32 c = 0; c < chans; c++)
+                out[(off + i) * chans + c] = monitor_buf[i];
+    }
 
     return noErr;
 }
@@ -248,8 +284,18 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
     (void)flags;
     (void)bus;
 
-    if (!io || io->mNumberBuffers != 1 || !io->mBuffers[0].mData)
+    if (!io || io->mNumberBuffers != 1 || !io->mBuffers[0].mData) {
+        (void)atomic_fetch_add_explicit(&ca_bad_buffers, 1,
+                                        memory_order_relaxed);
         return noErr;
+    }
+    if (io->mBuffers[0].mNumberChannels != 1 ||
+        (size_t)io->mBuffers[0].mDataByteSize <
+            (size_t)frames * sizeof(int16_t)) {
+        (void)atomic_fetch_add_explicit(&ca_bad_buffers, 1,
+                                        memory_order_relaxed);
+        return noErr;
+    }
 
     /*
      * The AU's own timeline is the exact record of whether audio was lost:
@@ -306,16 +352,24 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
 
     {
         int16_t *out = (int16_t *)io->mBuffers[0].mData;
-        size_t n = frames < MIX_SLICE_FRAMES ? frames : MIX_SLICE_FRAMES;
 
-        /* The monitor wants the tone as generated, before anything is mixed
-         * into it, so it gets a copy on the way past. */
-        if (monitor_unit)
-            ring_put(&monitor_ring, out, n);
+        /* The device buffer can exceed the scratch size; process it in
+         * chunks so the microphone and the monitor cover every frame. */
+        for (size_t off = 0; off < frames; off += MIX_SLICE_FRAMES) {
+            size_t n = (size_t)frames - off;
 
-        if (mix_mic_mode) {
-            ring_fill(&mic_ring, mix_mix, n, &mix_last_mic);
-            mix_block(out, mix_mix, n);
+            if (n > MIX_SLICE_FRAMES)
+                n = MIX_SLICE_FRAMES;
+
+            /* The monitor wants the tone as generated, before anything is
+             * mixed into it, so it gets a copy on the way past. */
+            if (monitor_unit)
+                ring_put(&monitor_ring, out + off, n);
+
+            if (mix_mic_mode) {
+                ring_fill(&mic_ring, mix_mix, n, &mix_last_mic);
+                mix_block(out + off, mix_mix, n);
+            }
         }
     }
 
@@ -535,6 +589,8 @@ static int ca_open_mic(AudioDeviceID output_dev)
         mic_unit = NULL;
         return -1;
     }
+
+    ca_set_max_slice(mic_unit);
 
     (void)AudioUnitSetProperty(mic_unit, kAudioOutputUnitProperty_EnableIO,
                                kAudioUnitScope_Input, 1, &one, sizeof(one));
@@ -929,6 +985,22 @@ int audio_backend_run(void)
     if (monitor_ring.dropped || monitor_ring.held)
         fprintf(stderr, "monitor: %u frame(s) dropped, %u held\n",
                 monitor_ring.dropped, monitor_ring.held);
+
+    if (ca_oversized_slices)
+        fprintf(stderr,
+                "mix-mic: %u capture slice(s) exceeded %u frames and were "
+                "dropped\n",
+                ca_oversized_slices, (unsigned int)MIX_SLICE_FRAMES);
+
+    {
+        unsigned int bad = atomic_load_explicit(&ca_bad_buffers,
+                                                memory_order_relaxed);
+
+        if (bad)
+            fprintf(stderr,
+                    "warning: %u render callback(s) received an unexpected "
+                    "buffer list and were left alone\n", bad);
+    }
 
     /* Hand the backend's own diagnostics to the core's exit summary. */
     audio_underruns += ca_gaps;
