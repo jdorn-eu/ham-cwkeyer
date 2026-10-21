@@ -1175,8 +1175,9 @@ int input_backend_setup(char *device_path, size_t path_size)
         return -1;
 
     if (count == 0) {
-        fprintf(stderr, "\n  %s⚠%s No /dev/input/event* devices found.\n",
-                CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+        fprintf(stderr, "\n  %s⚠%s No %s devices found.\n",
+                CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
+                input_backend_devices_noun());
         goto out;
     }
 
@@ -1220,9 +1221,9 @@ int input_backend_setup(char *device_path, size_t path_size)
                                        SETUP_TAP_TIMEOUT_MS, &which, &code);
             if (rc < 0) {
                 fprintf(stderr,
-                        "\n  %s⚠%s No readable input devices; check your udev "
-                        "rules (see the README).\n",
-                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET));
+                        "\n  %s⚠%s No readable input devices; %s.\n",
+                        CLR(use_color, ANSI_YELLOW), CLR(use_color, ANSI_RESET),
+                        input_backend_unreadable_hint());
                 goto out;
             }
             if (rc == 0) {
