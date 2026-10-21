@@ -89,7 +89,9 @@ int  audio_backend_list(FILE *out);
  * keep_running() turns false and leaves the paddle state cleared.
  *
  * suspend() and resume() drop and re-take whatever exclusive access the
- * backend may hold, so SIGTSTP/SIGCONT leave the shell usable.
+ * backend may hold, so SIGTSTP/SIGCONT leave the shell usable.  A backend
+ * whose exclusive access is tied to the open device handle (macOS) may have
+ * nothing to release, and can leave both empty.
  * grab_description() supplies the startup-banner text for the current grab
  * setting, which describes what will be attempted: whether it then works is
  * reported when the device opens. grab_possible() says whether exclusive

@@ -150,6 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A device with no errno now prints `[unreadable]` rather than
+  `Undefined error: 0`, and a macOS USB location ID above 2^31 no longer sorts
+  as a negative device number.
 - A suspend/resume or a change of the system output device no longer counts
   as an audio dropout or a late keying element: the CoreAudio timeline is
   re-anchored, and the keyer forgets the element start it could not measure

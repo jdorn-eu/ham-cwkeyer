@@ -140,6 +140,17 @@ static int dev_int(IOHIDDeviceRef dev, CFStringRef key, int fallback)
     return out;
 }
 
+static int64_t dev_int64(IOHIDDeviceRef dev, CFStringRef key, int64_t fallback)
+{
+    CFTypeRef v = IOHIDDeviceGetProperty(dev, key);
+    int64_t out = fallback;
+
+    if (v && CFGetTypeID(v) == CFNumberGetTypeID())
+        (void)CFNumberGetValue((CFNumberRef)v, kCFNumberSInt64Type, &out);
+
+    return out;
+}
+
 static void dev_str(IOHIDDeviceRef dev, CFStringRef key, char *out, size_t size)
 {
     CFTypeRef v = IOHIDDeviceGetProperty(dev, key);
@@ -345,7 +356,7 @@ int input_backend_discover(input_device_t **out, size_t *out_count)
 
         d->vendor = (unsigned short)dev_int(dev, CFSTR(kIOHIDVendorIDKey), 0);
         d->product = (unsigned short)dev_int(dev, CFSTR(kIOHIDProductIDKey), 0);
-        d->order = dev_int(dev, CFSTR(kIOHIDLocationIDKey), 0);
+        d->order = (long)dev_int64(dev, CFSTR(kIOHIDLocationIDKey), 0);
         device_id(dev, d->id, sizeof(d->id));
 
         d->kind = classify_hid(dev, d->name, d->vendor, d->product);

@@ -990,7 +990,7 @@ struct input_device_t {
     char name[256];
     unsigned short vendor;
     unsigned short product;
-    int order;           /* backend sort key within a group */
+    long order;          /* backend sort key within a group */
     device_kind_t kind;
     int default_paddles;
     int readable;
@@ -1013,7 +1013,10 @@ static void print_device_line(FILE *out, const char *path, const char *name,
 
 static void print_unreadable_line(FILE *out, const char *path, int errnum)
 {
-    fprintf(out, "  %s  [unreadable: %s]\n", path, strerror(errnum));
+    if (errnum)
+        fprintf(out, "  %s  [unreadable: %s]\n", path, strerror(errnum));
+    else
+        fprintf(out, "  %s  [unreadable]\n", path);
 }
 
 static int stream_supports_color(FILE *out)

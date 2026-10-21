@@ -238,7 +238,7 @@ int input_backend_discover(input_device_t **out, size_t *out_count)
             d->vendor = id.vendor;
             d->product = id.product;
         }
-        d->order = (int)device_event_number(path);
+        d->order = device_event_number(path);
 
         unsigned long keys[NBITS(KEY_MAX + 1)] = {0};
         int has_keys = ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys) >= 0;

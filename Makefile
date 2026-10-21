@@ -55,7 +55,6 @@ DIFF_WARNINGS = -Wno-strict-overflow
 endif
 
 CPPFLAGS += -DCWKEYER_VERSION='"$(VERSION)"'
-LDLIBS    = -lasound -lpthread -lm
 
 # test_keyer and test_signals are portable; the rest are per platform.
 CTESTS_COMMON = test_keyer test_signals
@@ -80,6 +79,7 @@ SCRIPT_TEST =
 INSTALL_MIC_MIX =
 else
 PLATFORM_SRCS = $(LINUX_SRCS)
+LDLIBS    = -lasound -lpthread -lm
 CTESTS     = $(CTESTS_COMMON) $(CTESTS_LINUX)
 SCRIPT_TEST = bash tests/test_mic_mix.sh
 INSTALL_MIC_MIX = install -m 0755 cw-mic-mix.sh "$(DESTDIR)$(BINDIR)/cw-mic-mix" && \
