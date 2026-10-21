@@ -137,7 +137,7 @@ argument may therefore stop at a field boundary, and `04d8:01a6` selects the
 adapter wherever it is plugged in as long as that is unambiguous. The built-in
 keyboard reports zeros for vendor and product, so it needs the full id.
 
-Three things differ from Linux, all of them forced by the platform:
+Four things differ from Linux, all of them forced by the platform:
 
 - **Input Monitoring.** macOS only delivers keyboard HID values to a process
   holding the Input Monitoring permission, and attributes it to whatever
