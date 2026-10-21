@@ -1183,7 +1183,7 @@ void audio_backend_close(void)
 void audio_backend_usage(FILE *out)
 {
     fputs("  CW_AUDIO_DEVICE=default   Output device name or UID (default)\n"
-          "  CW_MIX_MIC_DEVICE=default Input device name or UID for mix-mic\n"
+          "  CW_MIX_MIC_DEVICE=default Input device name or UID for --mix-mic\n"
           "  CW_MIX_MONITOR=none       Play the sidetone alone on this device\n",
           out);
 }
