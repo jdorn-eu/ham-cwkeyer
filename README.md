@@ -95,7 +95,7 @@ There is also an optional differential test against the real UnixCW libcw keyer:
 
 `make test-differential` is a self-contained differential test against eight third-party iambic keyer variants (seven projects: recri/keyer's vk6ph, ad5dz, dttsp, k1el and nd7pa, plus cw-dojo and morse-flipper; dttsp is tested in two configurations). Each algorithm is transcribed into the test, so it needs no external checkout; it checks the published `N`/`A`/`C` reference cases, 20,000 random paddle schedules, and a realistic operator gesture for every character in the decode table (with and without human timing jitter). It is kept out of `make test` because it takes a few seconds. See `docs/validation.md` for the results and for the argument that the type B core matches the 8044ABM specification.
 
-A live paddle/listening check is still useful after changing timing, debouncing, or ALSA settings.
+A live paddle/listening check is still useful after changing timing, debouncing, or audio settings.
 
 `make coverage` (requires `gcovr`) runs the C suites with `--coverage` and writes an HTML report to `coverage/index.html` plus a Cobertura `coverage/coverage.xml`. Coverage is reported for `cwkeyer.c` and the Linux backends and sits around 70%; the remainder is mostly error paths that are hard to trigger (thread-creation failure, ALSA recovery, evdev read errors) and the usage text, so treat it as a map of what to test next rather than a target.
 
@@ -272,9 +272,9 @@ rates, buffers, and defaults on macOS. It is the quickest way to fill in
 `CW_MIX_MONITOR`.
 With no arguments on an interactive terminal, `./cwkeyer` runs the same
 setup; without a terminal it prints the usage text.
-The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). `./cwkeyer --help` lists the known key names; raw evdev key codes work too.
+The default speed, pitch, PCM peak level, and 5 ms raised-cosine slopes match UnixCW's `cw` defaults: 12 WPM, 800 Hz, and 70% of full scale. Paddle defaults are left ctrl (dit) and right ctrl (dah). `./cwkeyer --help` lists the known key names; raw key codes (evdev codes on Linux, HID usages on macOS) work too.
 
-While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads evdev, not the tty). Terminal input queued while the keyer runs is discarded on exit, so keystrokes do not reappear at the shell prompt. Ctrl+C, SIGTERM, SIGHUP, and SIGQUIT stop it cleanly and restore the terminal and the evdev grab. Ctrl+Z suspends it properly: a dedicated thread releases the terminal and grab before stopping and re-establishes them on resume, so the shell stays usable while it is suspended. Ordinary stop/suspend operations run outside asynchronous signal handlers and are serialized with device and terminal startup/shutdown. A fatal crash (for example SIGSEGV) still takes the kernel's default action; terminal restoration cannot be guaranteed after a crash. If needed, run `stty sane` to repair the tty.
+While running, terminal echo is disabled so keystrokes don't print in the window (the keyer reads the paddle device, not the tty). Terminal input queued while the keyer runs is discarded on exit, so keystrokes do not reappear at the shell prompt. Ctrl+C, SIGTERM, SIGHUP, and SIGQUIT stop it cleanly and restore the terminal and the device access. Ctrl+Z suspends it properly: a dedicated thread releases the terminal and the device access before stopping and re-establishes them on resume, so the shell stays usable while it is suspended. Ordinary stop/suspend operations run outside asynchronous signal handlers and are serialized with device and terminal startup/shutdown. A fatal crash (for example SIGSEGV) still takes the kernel's default action; terminal restoration cannot be guaranteed after a crash. If needed, run `stty sane` to repair the tty.
 
 With `decode`, each keyed symbol is printed as text as you key, without newlines; unknown symbols are ignored. Pausing for more than seven dits between characters (the ITU word gap) prints a single space, so word breaks you key by hand appear as spaces. Decoder output is written synchronously by the keyer thread, so a blocked stdout consumer can delay paddle processing; keep the output destination draining when using `decode`.
 
@@ -287,7 +287,7 @@ If stdin is a readable terminal or pipe, the keyer accepts single-key controls w
 - `9` / `0` — quieter / louder (5% per step)
 - `,` / `.` — lighter / heavier weighting (1 ms per step)
 
-A pipe's final controls are read even if its writer has already closed. Speed, pitch, level, and weighting changes take effect on the next element. On a terminal, the current settings are shown on a single status line that is rewritten in place rather than appended line by line. The startup values come from the command line, `CW_KEYER_LEVEL`, and the usual environment variables. These control keys are read from stdin, not from the evdev paddle device, so avoid remapping a paddle to one of them.
+A pipe's final controls are read even if its writer has already closed. Speed, pitch, level, and weighting changes take effect on the next element. On a terminal, the current settings are shown on a single status line that is rewritten in place rather than appended line by line. The startup values come from the command line, `CW_KEYER_LEVEL`, and the usual environment variables. These control keys are read from stdin, not from the paddle device, so avoid remapping a paddle to one of them.
 
 ## Environment
 - `CW_ALSA_DEVICE` Linux only. ALSA PCM to open. Default: `pulse`. With this default, an unset or empty `PULSE_SINK` is tried as `cw_out`, falling back to the system default sink if that one is unavailable. `./cwkeyer --list-audio-devices` prints the PCM names.

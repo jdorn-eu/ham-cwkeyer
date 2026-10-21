@@ -288,6 +288,8 @@ void audio_backend_close(void)
 
 void audio_backend_suspend(void)
 {
+    /* An ALSA underrun across a stop is real and is counted; there is no
+     * timeline of our own to re-anchor. */
 }
 
 void audio_backend_resume(void)

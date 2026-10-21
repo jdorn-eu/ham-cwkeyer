@@ -5,6 +5,11 @@
 # launched straight from a terminal, the terminal is the responsible process.
 set -eu
 
+[ "$(uname -s)" = Darwin ] || {
+    echo "error: the app bundle can only be built on macOS" >&2
+    exit 1
+}
+
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 bin=${1:-"$root/cwkeyer"}
 app=$root/cwkeyer.app

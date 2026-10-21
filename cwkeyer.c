@@ -17,10 +17,11 @@
  *   make test   (the hardware-independent suites)
  *
  * Which device to pass and which environment variables apply depends on
- * the backend; the README documents the Linux ones (an evdev node such as
- * /dev/input/event3, CW_ALSA_DEVICE, CW_ALSA_LATENCY_US, PULSE_SINK).  The
- * keyer's own settings are the same everywhere: CW_KEYER_LEVEL,
- * CW_KEYER_WEIGHT_MS, and CW_KEYER_DEBOUNCE_MS, plus the runtime keys.
+ * the backend; the README documents both (an evdev node, CW_ALSA_DEVICE,
+ * CW_ALSA_LATENCY_US, and PULSE_SINK on Linux; vendor:product:location and
+ * CW_AUDIO_DEVICE on macOS).  The keyer's own settings are the same
+ * everywhere: CW_KEYER_LEVEL, CW_KEYER_WEIGHT_MS, and
+ * CW_KEYER_DEBOUNCE_MS, plus the runtime keys.
  */
 
 #if defined(__linux__) && !defined(_GNU_SOURCE)
