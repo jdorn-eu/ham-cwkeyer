@@ -42,4 +42,4 @@ else
 fi
 
 echo "wrote $app"
-echo "run it with: open '$app' --args <device> [wpm] [freq] ..."
+echo "run it with: open '$app' --args <device> --wpm 25 --freq 700"
