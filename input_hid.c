@@ -789,6 +789,8 @@ void *input_backend_thread(void *arg)
         run_loop_briefly(0.1);
     }
 
+    /* The removal callback has no per-call context, so a late delivery can
+     * only touch statics; closing the device stops it. */
     IOHIDDeviceRegisterRemovalCallback(dev, NULL, NULL);
     hid_close_all();
     clear_input_state();

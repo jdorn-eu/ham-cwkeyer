@@ -2327,7 +2327,7 @@ int main(int argc, char **argv)
     /* Only mention the audio health if something actually went wrong. */
     if (audio_underruns || keyer_late_elements)
         fprintf(stderr,
-                "audio: %u underrun(s), %u late element(s) "
+                "audio: %u interruption(s), %u late element(s) "
                 "(max %.1f ms)\n",
                 audio_underruns, keyer_late_elements,
                 (double)keyer_max_overrun_ns / 1000000.0);
