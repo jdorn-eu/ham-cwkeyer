@@ -84,6 +84,11 @@ and `test_evdev` on Linux, or `test_coreaudio` and `test_hid` on macOS.
 
 The same suite also covers argument parsing (`parse_double_arg`, `parse_uint_env`, `lookup_key`), input-device classification for `--list-devices`, paddle tap detection, setup prompts, runtime control keys, and a real `main()` startup/failure/shutdown path.
 
+`make test-tsan` (macOS) rebuilds `tests/test_coreaudio.c` with ThreadSanitizer
+and runs it.  The capture ring has a producer and a consumer on different audio
+callbacks, so this is the one place a data race could hide; the test drives both
+threads and checks that every frame is either consumed or counted as dropped.
+
 There is also an optional differential test against the real UnixCW libcw keyer: `make test-libcw` drives libcw's iambic graph and our mode B core with identical random paddle schedules and compares the element sequences (200k trials, no mismatches). It needs a built unixcw checkout; set `LIBCW_DIR` if it is not at `../unixcw-code`. It is not part of `make test` or CI because of that external dependency.
 
 `make test-differential` is a self-contained differential test against eight third-party iambic keyer variants (seven projects: recri/keyer's vk6ph, ad5dz, dttsp, k1el and nd7pa, plus cw-dojo and morse-flipper; dttsp is tested in two configurations). Each algorithm is transcribed into the test, so it needs no external checkout; it checks the published `N`/`A`/`C` reference cases, 20,000 random paddle schedules, and a realistic operator gesture for every character in the decode table (with and without human timing jitter). It is kept out of `make test` because it takes a few seconds. See `docs/validation.md` for the results and for the argument that the type B core matches the 8044ABM specification.
@@ -92,7 +97,7 @@ A live paddle/listening check is still useful after changing timing, debouncing,
 
 `make coverage` (requires `gcovr`) runs the C suites with `--coverage` and writes an HTML report to `coverage/index.html` plus a Cobertura `coverage/coverage.xml`. Coverage is reported for `cwkeyer.c` and the Linux backends and sits around 70%; the remainder is mostly error paths that are hard to trigger (thread-creation failure, ALSA recovery, evdev read errors) and the usage text, so treat it as a map of what to test next rather than a target.
 
-CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict GCC build, `make test`, `make analyze`, and `shellcheck`; a clang build and test; a sanitizer job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer; and a coverage job that uploads the report as an artifact. A macOS job builds and runs the portable and Darwin suites, the differential test, and the sanitizers; it cannot ask for AddressSanitizer's leak checker, which Darwin does not provide.
+CI (`.github/workflows/ci.yml`) runs, on every push and pull request: the strict GCC build, `make test`, `make analyze`, and `shellcheck`; a clang build and test; a sanitizer job that rebuilds and runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer; and a coverage job that uploads the report as an artifact. A macOS job builds and runs the portable and Darwin suites, the differential test, static analysis, the ThreadSanitizer ring test, the sanitizers, and the optional app bundle; it cannot ask for AddressSanitizer's leak checker, which Darwin does not provide. A second, newer macOS runner runs the build and tests as an early warning for SDK and permission changes, and the release workflow refuses to publish unless a macOS build and test pass.
 
 ## License
 
@@ -150,7 +155,17 @@ Three things differ from Linux, all of them forced by the platform:
   your terminal. If you start it from a script, a launcher, or an app bundle,
   grant the permission to that program instead. `sudo` changes the environment
   and the TCC identity too, so prefer `--setup` (which defaults to `nograb`
-  where a seize is impossible) over running the keyer as root.
+  where a seize is impossible) over running the keyer as root. To give the
+  permission to the keyer rather than the terminal, build the optional bundle
+  and launch it through LaunchServices:
+  ```
+  make
+  make app
+  open cwkeyer.app --args 04d8:01a6 25 700
+  ```
+  The bundle is an agent (no Dock icon), ad-hoc signed and not notarized, and
+  writes its diagnostics to the system log; run `--setup` and
+  `--list-devices` from a terminal first.
 - **Latency is the device buffer.** CoreAudio asks for one device buffer per
   render callback (512 frames, 10.7 ms on the built-in speakers) and the
   measured output latency is about 12 ms. The client format uses the output

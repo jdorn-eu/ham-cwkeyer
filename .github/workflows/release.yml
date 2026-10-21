@@ -9,7 +9,21 @@ permissions:
   contents: write
 
 jobs:
+  macos:
+    # Do not publish a source release that no longer builds on a platform the
+    # README supports.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and test
+        run: |
+          make clean
+          make
+          make test
+
   release:
+    needs: macos
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7

@@ -62,7 +62,7 @@ CTESTS_COMMON = test_keyer test_signals
 CTESTS_LINUX  = test_audio test_evdev
 CTESTS_DARWIN = test_coreaudio test_hid
 
-.PHONY: test test-differential analyze coverage test-libcw install uninstall dist clean
+.PHONY: test test-differential test-tsan analyze coverage test-libcw app install uninstall dist clean
 
 # Tests include cwkeyer.c, which is a unity build: the portable core plus
 # the backend named here.  List the backends so a backend edit triggers a
@@ -108,6 +108,27 @@ test-differential:
 	    -o "$$tmp/test_differential_thirdparty" \
 	    tests/test_differential_thirdparty.c $(LDLIBS) || exit 1; \
 	"$$tmp/test_differential_thirdparty" $(ARGS) || exit 1
+
+# ThreadSanitizer over the ring's producer/consumer tests.  The ring is
+# CoreAudio-only, so this is a macOS target; elsewhere it is a no-op.
+test-tsan:
+ifeq ($(UNAME_S),Darwin)
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	$(CC) $(CPPFLAGS) -O1 -g -fsanitize=thread $(WARNINGS) \
+	    -o "$$tmp/test_coreaudio_tsan" tests/test_coreaudio.c $(LDLIBS) || exit 1; \
+	TSAN_OPTIONS=halt_on_error=1 "$$tmp/test_coreaudio_tsan"
+else
+	@echo "test-tsan: CoreAudio only; nothing to do" >&2
+endif
+
+# Optional macOS app bundle: a stable TCC identity for Input Monitoring and
+# Microphone permissions.  See contrib/macos/make-app.sh.
+app: cwkeyer
+ifeq ($(UNAME_S),Darwin)
+	./contrib/macos/make-app.sh
+else
+	@echo "app: only meaningful on macOS" >&2; exit 1
+endif
 
 # Static analysis; slower than a normal build, so kept separate.  GCC and
 # clang both have one, with different spellings.
@@ -174,4 +195,4 @@ dist:
 
 clean:
 	rm -f cwkeyer test_differential_libcw
-	rm -rf coverage
+	rm -rf coverage cwkeyer.app

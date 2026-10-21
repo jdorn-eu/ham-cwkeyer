@@ -30,7 +30,7 @@ jobs:
         run: make analyze
 
       - name: Lint scripts
-        run: shellcheck cw-mic-mix.sh tests/test_mic_mix.sh
+        run: shellcheck cw-mic-mix.sh tests/test_mic_mix.sh contrib/macos/make-app.sh
 
   clang:
     runs-on: ubuntu-26.04
@@ -108,6 +108,17 @@ jobs:
       - name: Differential test against third-party keyers
         run: make test-differential
 
+      - name: Static analysis
+        run: make analyze
+
+      - name: App bundle
+        run: |
+          make app
+          test -x cwkeyer.app/Contents/MacOS/cwkeyer
+
+      - name: Thread sanitizer
+        run: make test-tsan
+
       # AddressSanitizer's leak checker is not available on Darwin and aborts
       # if asked for, so unlike the Linux job this one only asks for stack
       # traces.
@@ -119,4 +130,17 @@ jobs:
           make test CFLAGS='-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer'
 
       - name: Lint scripts
-        run: shellcheck cw-mic-mix.sh tests/test_mic_mix.sh
+        run: shellcheck cw-mic-mix.sh tests/test_mic_mix.sh contrib/macos/make-app.sh
+
+  macos-current:
+    # A newer runner alongside the pinned one above: SDKs and TCC behaviour
+    # move between macOS releases, and this job is the early warning.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build (strict)
+        run: make clean && make
+
+      - name: Test
+        run: make test

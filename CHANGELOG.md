@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `make app` and `contrib/macos/make-app.sh`: build a minimal ad-hoc-signed
+  `cwkeyer.app` so macOS attaches Input Monitoring and Microphone permissions
+  to the keyer rather than the terminal.  It is an agent (no Dock icon) and
+  runs from LaunchServices; interactive setup still belongs in a terminal.
 - `--list-audio-devices` (`-A`): print the audio devices the platform accepts
   with the names its settings use, so the values for `CW_ALSA_DEVICE`,
   `CW_AUDIO_DEVICE`, `CW_MIX_MIC_DEVICE`, and `CW_MIX_MONITOR` are discoverable
@@ -63,6 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI now runs clang's static analyzer, the ThreadSanitizer ring test, and the
+  app bundle on macOS, and adds a current macOS runner next to the pinned one.
+  The release workflow is gated on a macOS build and test.
 - `--help` takes the `mix-mic` paragraph from the macOS backend. Linux help
   points at `cw-mic-mix.sh` instead of advertising a keyword it refuses. The
   README's design description and timing notes now name the input and audio

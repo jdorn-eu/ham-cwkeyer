@@ -112,3 +112,6 @@ ham-cwkeyer-*.tar.gz
 # Cloned third-party research material
 research/
 cwkeyer-hayguen/
+
+# macOS app bundle (optional)
+cwkeyer.app/
