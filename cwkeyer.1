@@ -337,10 +337,12 @@ cannot be guaranteed; use
 .B stty sane
 if necessary.
 .SH DIAGNOSTICS
-When the keyer stops it prints a summary to standard error if any ALSA
-underruns occurred or if any element started more than a millisecond later
-than its nominal mark plus space, together with the worst delay. A run with
-no audio problems prints nothing there.
+When the keyer stops it prints a summary to standard error if any audio
+interruptions occurred (an ALSA underrun, or a jump in CoreAudio's sample
+timeline) or if any element started more than a millisecond later than its
+nominal mark plus space, together with the worst delay. A run with no audio
+problems prints nothing there, except that on macOS the measured output
+latency is always reported.
 .SH EXAMPLES
 .TP
 .B cwkeyer /dev/input/event3

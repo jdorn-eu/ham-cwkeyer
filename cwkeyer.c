@@ -126,6 +126,9 @@ static unsigned int keyer_late_elements = 0;
 static int64_t keyer_max_overrun_ns = 0;
 static int64_t keyer_late_threshold_ns = 1000000LL;   /* 1 ms */
 
+/* Set by SIGCONT: the gap across a stop is not a late element. */
+static atomic_int keyer_reanchor = 0;
+
 static atomic_int dit_paddle = 0;
 static atomic_int dah_paddle = 0;
 
@@ -223,6 +226,7 @@ static void *signal_thread(void *arg)
                 pthread_mutex_lock(&terminal_lock);
                 terminal_suspended = 1;
                 pthread_mutex_unlock(&terminal_lock);
+                audio_backend_suspend();
                 input_backend_suspend();
                 restore_terminal();
                 /* SIGSTOP suspends all threads; SIGCONT will be consumed here
@@ -240,6 +244,8 @@ static void *signal_thread(void *arg)
                     terminal_suspended = 0;
                     pthread_mutex_unlock(&terminal_lock);
                     disable_terminal_echo();
+                    audio_backend_resume();
+                    ASTORE(keyer_reanchor, 1);
                     input_backend_resume();
                 }
             }
@@ -1640,6 +1646,9 @@ static void *keyer_thread(void *arg)
     const int64_t idle_poll_cap_ns = debounce_ns > 0 ? 2000000LL : 1000000LL;
 
     while (keep_running()) {
+        if (atomic_exchange_explicit(&keyer_reanchor, 0, memory_order_relaxed))
+            prev_expected_start = 0;
+
         /*
          * Straight-key passthrough: poll the debounced paddles and publish
          * the combined key state for the audio thread.  No iambic core, no

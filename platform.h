@@ -63,6 +63,16 @@ int  audio_backend_run(void);
 void audio_backend_close(void);
 
 /*
+ * audio_backend_suspend()/resume() bracket SIGTSTP/SIGCONT the way the input
+ * hooks do.  A backend uses them to discard diagnostics that a stopped
+ * process would otherwise make look like a fault (a stopped audio unit does
+ * not render, and the resumed timeline jumps); an empty implementation is
+ * fine.
+ */
+void audio_backend_suspend(void);
+void audio_backend_resume(void);
+
+/*
  * audio_backend_list() prints the playback devices this backend accepts, in
  * the form its own device settings use, and returns 0 on success.  The
  * output is the place a user finds the names for CW_ALSA_DEVICE or

@@ -55,6 +55,7 @@ static void reset_audio(void)
     ca_gaps = 0;
     ca_slice_frames = 0;
     atomic_store(&ca_bad_buffers, 0);
+    atomic_store(&ca_reanchor, 0);
     ca_delay_min = 1e9;
     ca_delay_max = 0;
     ca_delay_sum = 0;
@@ -176,6 +177,28 @@ static void test_dropout_detection(void)
     make_time(&ts, 2048);
     (void)ca_render(NULL, NULL, &ts, 0, 512, &list);
     expect(ca_gaps == 1, "a gap in the sample timeline was not counted");
+}
+
+/* A resume re-anchors the timeline; the same jump without one is a gap. */
+static void test_resume_reanchor(void)
+{
+    int16_t buf[64];
+    AudioBufferList list;
+    AudioTimeStamp ts;
+
+    reset_audio();
+    make_list(&list, buf, 64);
+
+    make_time(&ts, 0);
+    (void)ca_render(NULL, NULL, &ts, 0, 64, &list);
+    audio_backend_resume();
+    make_time(&ts, 1000000);
+    (void)ca_render(NULL, NULL, &ts, 0, 64, &list);
+    expect(ca_gaps == 0, "a resumed timeline was counted as a dropout");
+
+    make_time(&ts, 2000000);
+    (void)ca_render(NULL, NULL, &ts, 0, 64, &list);
+    expect(ca_gaps == 1, "a real timeline jump after a resume was not counted");
 }
 
 /* AudioBufferList declares room for one buffer; a two-buffer list needs a
@@ -646,6 +669,7 @@ int main(void)
     test_silence_and_level();
     test_mark_ends();
     test_dropout_detection();
+    test_resume_reanchor();
     test_latency_filter();
     test_monitor_render();
     test_odd_buffer_lists();

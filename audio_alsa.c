@@ -286,6 +286,14 @@ void audio_backend_close(void)
     }
 }
 
+void audio_backend_suspend(void)
+{
+}
+
+void audio_backend_resume(void)
+{
+}
+
 int audio_backend_supports_mix(void)
 {
     return 0;

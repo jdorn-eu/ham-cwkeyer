@@ -138,6 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A suspend/resume or a change of the system output device no longer counts
+  as an audio dropout or a late keying element: the CoreAudio timeline is
+  re-anchored, and the keyer forgets the element start it could not measure
+  across the stop.  The exit summary still reports genuine gaps.
 - On macOS, a denied Input Monitoring permission is now reported at startup
   and by the setup wizard, instead of surfacing as a running keyer that never
   keys or a tap test that times out.  A failure to initialize the microphone

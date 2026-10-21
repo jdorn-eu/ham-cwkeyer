@@ -26,7 +26,7 @@ For each element, the keyer queues its start time and duration. The audio thread
 
 The mark queue is bounded. If audio falls far enough behind to fill it, the program stops with an error instead of silently losing elements.
 
-Audio health is reported at exit: ALSA underruns are counted (and the first few logged as they happen), and the keyer counts elements that started more than 1 ms later than their nominal mark + space. If either is non-zero, a summary line with the count and the worst delay is printed when the keyer stops; a clean run stays silent.
+Audio health is reported at exit: audio interruptions are counted (ALSA underruns, or a jump in CoreAudio's sample timeline, with the first few logged as they happen), and the keyer counts elements that started more than 1 ms later than their nominal mark + space. If either is non-zero, a summary line with the count and the worst delay is printed when the keyer stops; a clean run stays silent, except that the macOS backend prints its measured output latency once at exit.
 
 ## Source layout
 
@@ -160,7 +160,9 @@ two units share a clock closely enough that no resampling is needed.
 
 A dropout is reported the way an ALSA underrun is, but without an error code:
 CoreAudio's own sample timeline jumps when audio is lost, and that jump is
-counted and shown in the exit summary.
+counted and shown in the exit summary. A suspend/resume or a switch of the
+system output device re-anchors the timeline instead, so neither is mistaken
+for a dropout.
 
 `make test` runs the portable suites plus the Darwin ones on macOS and the
 Linux ones elsewhere; `make install` installs `cw-mic-mix` only on Linux,

@@ -60,6 +60,10 @@ static uint32_t ca_slice_frames;
 static UInt32 ca_device_buffer;
 static _Atomic unsigned int ca_bad_buffers;
 static unsigned int ca_oversized_slices;
+/* Set when the audio timeline must be re-anchored rather than measured: a
+ * resume or a change of the system output device. */
+static _Atomic int ca_reanchor;
+static int ca_listener_installed;
 
 #define CA_MAX_GAP_NOTES 4
 static double ca_gap_expect[CA_MAX_GAP_NOTES];
@@ -297,6 +301,9 @@ static OSStatus ca_render(void *refcon, AudioUnitRenderActionFlags *flags,
         return noErr;
     }
 
+    if (atomic_exchange_explicit(&ca_reanchor, 0, memory_order_relaxed))
+        ca_have_last = 0;
+
     /*
      * The AU's own timeline is the exact record of whether audio was lost:
      * contiguous mSampleTime means the callback ran on time, a jump means the
@@ -453,6 +460,39 @@ static AudioDeviceID ca_default_output(void)
 static AudioDeviceID ca_default_input(void)
 {
     return ca_default_device(kAudioHardwarePropertyDefaultInputDevice);
+}
+
+/* Following the system output means the timeline re-anchors when the user
+ * switches devices; that is not a dropout of the keyer's audio. */
+static OSStatus default_device_changed(AudioObjectID id, UInt32 n,
+                                       const AudioObjectPropertyAddress *addrs,
+                                       void *client)
+{
+    (void)id;
+    (void)n;
+    (void)addrs;
+    (void)client;
+
+    atomic_store_explicit(&ca_reanchor, 1, memory_order_relaxed);
+    return noErr;
+}
+
+static void ca_watch_default_device(int on)
+{
+    AudioObjectPropertyAddress a = {
+        kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
+
+    if (on) {
+        if (AudioObjectAddPropertyListener(kAudioObjectSystemObject, &a,
+                                           default_device_changed,
+                                           NULL) == noErr)
+            ca_listener_installed = 1;
+    } else if (ca_listener_installed) {
+        (void)AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &a,
+                                                default_device_changed, NULL);
+        ca_listener_installed = 0;
+    }
 }
 
 static AudioDeviceID ca_find_device(const char *want, int for_output)
@@ -992,6 +1032,9 @@ int audio_backend_open(unsigned int *actual_rate)
             ca_device_buffer = bf;
     }
 
+    if (follows_default)
+        ca_watch_default_device(1);
+
     if (mix_mic_mode && ca_open_mic(dev) < 0) {
         fprintf(stderr, "mix-mic: continuing without the microphone\n");
         mix_mic_mode = 0;
@@ -1100,8 +1143,21 @@ int audio_backend_run(void)
     return 0;
 }
 
+void audio_backend_suspend(void)
+{
+}
+
+void audio_backend_resume(void)
+{
+    /* The unit stopped rendering while the process was stopped; the first
+     * callback after SIGCONT has a new timeline, not a lost buffer. */
+    atomic_store_explicit(&ca_reanchor, 1, memory_order_relaxed);
+}
+
 void audio_backend_close(void)
 {
+    ca_watch_default_device(0);
+
     if (monitor_unit) {
         AudioUnitUninitialize(monitor_unit);
         AudioComponentInstanceDispose(monitor_unit);
