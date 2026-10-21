@@ -4,7 +4,7 @@
  *
  * Included at the end of cwkeyer.c; see platform.h for the contract.
  * Everything here is evdev: the grab state shared with the signal thread,
- * device discovery and classification for --list-devices, the tap-to-select
+ * device discovery and classification for --list-inputs, the tap-to-select
  * wizard behind --setup, and the thread that turns KEY_* press/release
  * events into paddle state.
  *
@@ -668,19 +668,15 @@ out:
 void input_backend_usage(FILE *out, usage_part_t part, const char *prog)
 {
     switch (part) {
-    case USAGE_DEVICE_ARG:
-        fputs("/dev/input/eventX", out);
-        break;
-
     case USAGE_EXAMPLES:
         fprintf(out,
-            "  %s /dev/input/eventX\n"
-            "  %s /dev/input/eventX 25 700\n"
-            "  %s /dev/input/eventX 25 700 COMMA DOT\n"
-            "  %s /dev/input/eventX 25 700 COMMA DOT nograb\n"
-            "  %s /dev/input/eventX nograb\n"
-            "  %s /dev/input/event3 nograb decode\n"
-            "  %s /dev/input/eventX straight\n",
+            "  %s --setup\n"
+            "  %s --setup --wpm 25 --freq 700\n"
+            "  %s /dev/input/eventX --wpm 25 --freq 700\n"
+            "  %s --device /dev/input/eventX --dit COMMA --dah DOT\n"
+            "  %s /dev/input/event3 --no-grab --decode\n"
+            "  %s --list-inputs\n"
+            "  %s --list-audio\n",
             prog, prog, prog, prog, prog, prog, prog);
         break;
 
@@ -689,19 +685,15 @@ void input_backend_usage(FILE *out, usage_part_t part, const char *prog)
               "evdev key codes.\n", out);
         break;
 
-    case USAGE_KEYWORDS:
-        /* Mic mixing is cw-mic-mix.sh's job on Linux, not a keyword. */
+    case USAGE_PLATFORM_OPTIONS:
+        fputs("  (This platform has no audio options; mic mixing is provided by\n"
+              "  cw-mic-mix.sh instead.)\n", out);
         break;
 
     case USAGE_DEVICE_OPTS:
-        fputs("            List readable /dev/input/event* devices, grouped as\n"
-              "            unknown, keyboard, or paddle, and exit. Colors are\n"
-              "            used only on a terminal; set NO_COLOR to disable them.\n"
-              "  --setup   Choose the paddle device by tapping the levers, then\n"
-              "            start with the default speed, pitch, level, and\n"
-              "            weighting. Known paddle adapters skip the tap test. A\n"
-              "            device that looks like a keyboard defaults to nograb.\n",
-              out);
+        fputs("  Devices are /dev/input/event*; --list-inputs groups them as\n"
+              "  unknown, keyboard, or paddle.  See the README for the\n"
+              "  recommended udev rule.\n", out);
         break;
 
     default:

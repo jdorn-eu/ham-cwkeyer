@@ -317,70 +317,87 @@ static int install_signal_handlers(void)
 
 static void usage(FILE *out, const char *prog)
 {
-    fprintf(out, "usage: %s ", prog);
-    input_backend_usage(out, USAGE_DEVICE_ARG, prog);
     fprintf(out,
-        " [wpm=12] [freq_hz=800] [dit_key] [dah_key] [options]\n"
-        "       %s --setup [wpm=12] [freq_hz=800] [dit_key] [dah_key] [options]\n"
-        "       %s --help | --version | --list-devices\n"
-        "       %s --list-audio-devices\n"
+        "usage: %s [OPTIONS] [DEVICE]\n"
+        "       %s --setup [OPTIONS]\n"
+        "       %s --list-inputs\n"
+        "       %s --list-audio\n"
+        "       %s --help | --version\n"
         "\n"
-        "Examples:\n", prog, prog, prog);
+        "Actions:\n"
+        "  -s, --setup              Choose the paddle device by tapping the\n"
+        "                           levers, then run.  No DEVICE is needed.\n"
+        "  -L, --list-inputs        List paddle/keyboard devices and exit.\n"
+        "  -A, --list-audio         List audio devices and exit.\n"
+        "  -h, --help               Print this help and exit.\n"
+        "  -V, --version            Print the version and exit.\n"
+        "\n"
+        "Input:\n"
+        "  -d, --device DEVICE      Input device; also accepted as the one\n"
+        "                           positional argument.\n"
+        "      --grab               Request exclusive access even if it may\n"
+        "                           fail.\n"
+        "      --no-grab            Never take exclusive access (default:\n"
+        "                           take it when the backend can).\n",
+        prog, prog, prog, prog, prog);
+    input_backend_usage(out, USAGE_DEVICE_OPTS, prog);
+    fprintf(out,
+        "\n"
+        "Keying:\n"
+        "  -w, --wpm WPM            Speed, 1..40 (default 12).\n"
+        "  -f, --freq HZ            Sidetone frequency (default 800).\n"
+        "      --dit KEY            Dit paddle key (default LEFTCTRL).\n"
+        "      --dah KEY            Dah paddle key (default RIGHTCTRL).\n"
+        "      --straight           Treat the paddles as a straight key.\n"
+        "      --decode             Print the keyed Morse as text.\n"
+        "      --level PERCENT      Sidetone level, 0..100 (default 70 or\n"
+        "                           CW_KEYER_LEVEL).\n"
+        "      --weight MS          Weighting, -25..25 (default 0 or\n"
+        "                           CW_KEYER_WEIGHT_MS).\n"
+        "      --debounce MS        RC paddle filter, 0..50 (default 10 or\n"
+        "                           CW_KEYER_DEBOUNCE_MS).\n"
+        "\n"
+        "Audio:\n");
+    input_backend_usage(out, USAGE_PLATFORM_OPTIONS, prog);
+    fprintf(out,
+        "\n"
+        "Environment:\n"
+        "  CW_KEYER_LEVEL=70          Sidetone level, 0..100\n"
+        "  CW_KEYER_WEIGHT_MS=0       Weighting, -25..25\n"
+        "  CW_KEYER_DEBOUNCE_MS=10    RC paddle filter, 0..50 ms\n"
+        "  NO_COLOR                   Do not color listings or setup output\n"
+        "\n"
+        "Audio environment:\n");
+    audio_backend_usage(out);
+    fprintf(out,
+        "\n"
+        "Command-line options override the environment; the environment\n"
+        "overrides the built-in defaults.\n"
+        "\n"
+        "Examples:\n");
     input_backend_usage(out, USAGE_EXAMPLES, prog);
     fprintf(out,
         "\n"
-        "Known key names include:\n"
+        "Key names:\n"
         "  LEFTCTRL RIGHTCTRL LEFTSHIFT RIGHTSHIFT LEFTALT RIGHTALT\n"
         "  COMMA DOT PERIOD LEFT RIGHT LEFTBRACE RIGHTBRACE\n"
-        "  INSERT DELETE Z X\n"
-        "\n");
+        "  INSERT DELETE Z X\n");
     input_backend_usage(out, USAGE_KEYNOTE, prog);
     fprintf(out,
         "\n"
-        "Options:\n"
-        "  nograb    Do not take exclusive control of the input device.\n"
-        "            Useful when testing on your normal keyboard.\n"
-        "  decode    Print the keyed morse, decoded to text, without\n"
-        "            newlines. Unknown symbols are ignored. A pause of\n"
-        "            more than seven dits between characters prints a\n"
-        "            space (the ITU word gap).\n"
-        "  straight  Use the paddles as a straight key: either lever\n"
-        "            keys the sidetone directly, with no iambic timing\n"
-        "            or memory. The RC paddle filter still applies.\n"
-        "            decode is ignored in this mode.\n");
-    input_backend_usage(out, USAGE_KEYWORDS, prog);
-    fprintf(out,
-        "  --help    Print this help and exit.\n"
-        "  --version Print the version and exit.\n"
-        "  --list-devices, -L\n");
-    input_backend_usage(out, USAGE_DEVICE_OPTS, prog);
-    fprintf(out,
-        "  --list-audio-devices, -A\n"
-        "            List the audio devices this platform accepts, with\n"
-        "            the names its audio settings use, and exit.\n"
+        "While running, terminal echo is disabled.  If stdin is readable:\n"
+        "  [ ]  slower / faster       - =  lower / higher pitch\n"
+        "  9 0  quieter / louder      , .  lighter / heavier weighting\n"
         "\n"
-        "With no arguments on an interactive terminal, cwkeyer runs the\n"
-        "same tap-to-select setup and then starts with the defaults.\n"
-        "Without a terminal it prints this help.\n"
-        "\n"
-        "While running, terminal echo is disabled so keystrokes do not\n"
-        "print in the window; the previous terminal state is restored\n"
-        "on exit.  If stdin is readable, [ ] change speed, - = change\n"
-        "pitch, 9 0 change the level, and , . change the weighting.\n"
-        "\n"
-        "Environment:\n"
-        "  CW_KEYER_LEVEL=70          Sidetone level, percent of full scale\n"
-        "  CW_KEYER_DEBOUNCE_MS=10    Paddle RC filter time constant, 0..50 ms\n"
-        "  CW_KEYER_WEIGHT_MS=0       Weighting, -25..25 ms; a constant time\n"
-        "                             added to each mark and taken from the\n"
-        "                             following space (0 is strict ITU timing)\n");
-    audio_backend_usage(out);
+        "With no arguments on a terminal, cwkeyer asks whether to start the\n"
+        "setup or print this help.  Without a terminal it prints this help.\n");
 }
 
-static double parse_double_arg(const char *s,
-                               const char *name,
-                               double min_val,
-                               double max_val)
+static double parse_double_option(const char *prog,
+                                  const char *option,
+                                  const char *s,
+                                  double min_val,
+                                  double max_val)
 {
     char *end = NULL;
     double v;
@@ -391,12 +408,39 @@ static double parse_double_arg(const char *s,
     if (errno != 0 || end == s || *end != '\0' ||
         !isfinite(v) || v < min_val || v > max_val) {
         fprintf(stderr,
-                "invalid %s '%s'; expected finite value in range %.3f..%.3f\n",
-                name, s, min_val, max_val);
-        exit(1);
+                "%s: invalid value '%s' for %s; expected a finite number in "
+                "range %.3f..%.3f\n",
+                prog, s, option, min_val, max_val);
+        fprintf(stderr, "Try '%s --help' for more information.\n", prog);
+        exit(2);
     }
 
     return v;
+}
+
+static unsigned int parse_uint_option(const char *prog,
+                                      const char *option,
+                                      const char *s,
+                                      unsigned int min_val,
+                                      unsigned int max_val)
+{
+    char *end = NULL;
+    unsigned long v;
+
+    errno = 0;
+    v = strtoul(s, &end, 10);
+
+    if (errno != 0 || end == s || *end != '\0' ||
+        v < min_val || v > max_val) {
+        fprintf(stderr,
+                "%s: invalid value '%s' for %s; expected an integer in "
+                "range %u..%u\n",
+                prog, s, option, min_val, max_val);
+        fprintf(stderr, "Try '%s --help' for more information.\n", prog);
+        exit(2);
+    }
+
+    return (unsigned int)v;
 }
 
 static unsigned int parse_uint_env(const char *name,
@@ -456,7 +500,7 @@ static double parse_double_env(const char *name,
  * codes come from the platform's CWKEY_* namespace.
  * Add more names here if needed.
  */
-static int lookup_key(const char *name)
+static int lookup_key(const char *prog, const char *name)
 {
     static const struct {
         const char *name;
@@ -523,8 +567,9 @@ static int lookup_key(const char *name)
         }
     }
 
-    fprintf(stderr, "unknown key name '%s'\n", name);
-    exit(1);
+    fprintf(stderr, "%s: unknown key name '%s'\n", prog, name);
+    fprintf(stderr, "Try '%s --help' for more information.\n", prog);
+    exit(2);
 }
 
 static int64_t mono_ns(void)
@@ -916,7 +961,7 @@ static void set_key_state(int code, int down)
 
 
 /*
- * Input-device discovery for --list-devices (and, later, the setup wizard).
+ * Input-device discovery for --list-inputs (and, later, the setup wizard).
  *
  * classify_input_device() is deliberately a pure function of the device
  * name and its evdev key bitmap so it can be unit tested; the syscall layer
@@ -944,7 +989,7 @@ static const char *device_kind_name(device_kind_t kind)
 
 /*
  * Known USB paddle adapters, matched by vendor/product ID.  Add new
- * devices here; the label is shown by --list-devices and in the setup
+ * devices here; the label is shown by --list-inputs and in the setup
  * summary.
  */
 typedef struct {
@@ -1354,12 +1399,20 @@ int input_backend_setup(char *device_path, size_t path_size)
         fprintf(stderr, " (%s)", known);
     fputc('\n', stderr);
 
-    int default_grab = devices[selected].kind == DEVICE_KIND_PADDLE &&
-                       input_backend_grab_possible();
-    int grab = prompt_yes_no("Take exclusive control of this device?",
+    int grab;
+
+    if (do_grab >= 0) {
+        /* --grab/--no-grab already answered the policy question. */
+        grab = do_grab;
+    } else {
+        int default_grab = devices[selected].kind == DEVICE_KIND_PADDLE &&
+                           input_backend_grab_possible();
+
+        grab = prompt_yes_no("Take exclusive control of this device?",
                              default_grab);
-    if (grab < 0)
-        goto out;
+        if (grab < 0)
+            goto out;
+    }
 
     if (grab && devices[selected].kind == DEVICE_KIND_KEYBOARD) {
         int sure;
@@ -2090,11 +2143,364 @@ static void *control_thread(void *arg)
  * A short, actionable complaint.  A wall of usage text for one bad argument
  * is not help, and the whole point of --help is that it can be asked for.
  */
-static void argument_error(const char *prog, const char *what, const char *arg)
+static int argument_error(const char *prog, const char *what, const char *arg)
 {
     fprintf(stderr, "%s: %s '%s'\n", prog, what, arg);
     fprintf(stderr, "Try '%s --help' for more information.\n", prog);
-    exit(1);
+    return 2;
+}
+
+
+typedef struct {
+    char *device;
+    char *positional;
+    int have_device;
+    int npositional;
+    int setup;
+    int list_inputs;
+    int list_audio;
+    int run_options;
+    int dit_given;
+    int dah_given;
+    int help;
+    int version;
+} cli_t;
+
+typedef enum {
+    OPT_DEVICE,
+    OPT_WPM,
+    OPT_FREQ,
+    OPT_DIT,
+    OPT_DAH,
+    OPT_LEVEL,
+    OPT_WEIGHT,
+    OPT_DEBOUNCE,
+    OPT_GRAB,
+    OPT_NO_GRAB,
+    OPT_STRAIGHT,
+    OPT_DECODE,
+    OPT_MIX_MIC,
+    OPT_SETUP,
+    OPT_LIST_INPUTS,
+    OPT_LIST_AUDIO,
+    OPT_HELP,
+    OPT_VERSION
+} option_id_t;
+
+typedef struct {
+    const char *long_name;
+    char short_name;
+    int has_arg;
+    option_id_t id;
+} option_spec_t;
+
+static const option_spec_t cli_options[] = {
+    {"device",      'd', 1, OPT_DEVICE},
+    {"wpm",         'w', 1, OPT_WPM},
+    {"freq",        'f', 1, OPT_FREQ},
+    {"dit",          0,  1, OPT_DIT},
+    {"dah",          0,  1, OPT_DAH},
+    {"level",        0,  1, OPT_LEVEL},
+    {"weight",       0,  1, OPT_WEIGHT},
+    {"debounce",     0,  1, OPT_DEBOUNCE},
+    {"grab",         0,  0, OPT_GRAB},
+    {"no-grab",      0,  0, OPT_NO_GRAB},
+    {"straight",     0,  0, OPT_STRAIGHT},
+    {"decode",       0,  0, OPT_DECODE},
+    {"mix-mic",      0,  0, OPT_MIX_MIC},
+    {"setup",       's', 0, OPT_SETUP},
+    {"list-inputs", 'L', 0, OPT_LIST_INPUTS},
+    {"list-audio",  'A', 0, OPT_LIST_AUDIO},
+    {"help",        'h', 0, OPT_HELP},
+    {"version",     'V', 0, OPT_VERSION},
+};
+
+static int usage_fail(const char *prog, const char *message)
+{
+    fprintf(stderr, "%s: %s\n", prog, message);
+    fprintf(stderr, "Try '%s --help' for more information.\n", prog);
+    return 2;
+}
+
+static const option_spec_t *find_long_option(const char *name, size_t len)
+{
+    for (size_t i = 0; i < sizeof(cli_options) / sizeof(cli_options[0]); i++) {
+        if (strlen(cli_options[i].long_name) == len &&
+            strncmp(cli_options[i].long_name, name, len) == 0)
+            return &cli_options[i];
+    }
+
+    return NULL;
+}
+
+static const option_spec_t *find_short_option(char c)
+{
+    for (size_t i = 0; i < sizeof(cli_options) / sizeof(cli_options[0]); i++) {
+        if (cli_options[i].short_name == c)
+            return &cli_options[i];
+    }
+
+    return NULL;
+}
+
+static int apply_option(cli_t *cli, const option_spec_t *spec, char *value,
+                        const char *prog)
+{
+    switch (spec->id) {
+    case OPT_DEVICE:
+        if (cli->have_device)
+            return usage_fail(prog, "device given more than once");
+        if (!value || !*value)
+            return usage_fail(prog, "--device needs a non-empty value");
+        cli->device = value;
+        cli->have_device = 1;
+        cli->run_options = 1;
+        break;
+    case OPT_WPM:
+        wpm = parse_double_option(prog, "--wpm", value, 1.0, MAX_WPM);
+        cli->run_options = 1;
+        break;
+    case OPT_FREQ:
+        freq_hz = parse_double_option(prog, "--freq", value, 1.0,
+                                      (double)AUDIO_RATE / 2.0 - 1.0);
+        cli->run_options = 1;
+        break;
+    case OPT_DIT:
+        dit_code = lookup_key(prog, value);
+        cli->dit_given = 1;
+        cli->run_options = 1;
+        break;
+    case OPT_DAH:
+        dah_code = lookup_key(prog, value);
+        cli->dah_given = 1;
+        cli->run_options = 1;
+        break;
+    case OPT_LEVEL:
+        volume_percent = (int)parse_uint_option(prog, "--level", value, 0, 100);
+        cli->run_options = 1;
+        break;
+    case OPT_WEIGHT:
+        weight_ms = parse_double_option(prog, "--weight", value, -25.0, 25.0);
+        cli->run_options = 1;
+        break;
+    case OPT_DEBOUNCE:
+        debounce_ms = parse_uint_option(prog, "--debounce", value, 0, 50);
+        debounce_ns = (int64_t)debounce_ms * 1000000LL;
+        cli->run_options = 1;
+        break;
+    case OPT_GRAB:
+        if (do_grab == 0)
+            return usage_fail(prog,
+                              "--grab and --no-grab cannot be used together");
+        do_grab = 1;
+        cli->run_options = 1;
+        break;
+    case OPT_NO_GRAB:
+        if (do_grab == 1)
+            return usage_fail(prog,
+                              "--grab and --no-grab cannot be used together");
+        do_grab = 0;
+        cli->run_options = 1;
+        break;
+    case OPT_STRAIGHT:
+        straight_mode = 1;
+        cli->run_options = 1;
+        break;
+    case OPT_DECODE:
+        do_decode = 1;
+        cli->run_options = 1;
+        break;
+    case OPT_MIX_MIC:
+        mix_mic_mode = 1;
+        cli->run_options = 1;
+        break;
+    case OPT_SETUP:
+        cli->setup = 1;
+        break;
+    case OPT_LIST_INPUTS:
+        cli->list_inputs = 1;
+        break;
+    case OPT_LIST_AUDIO:
+        cli->list_audio = 1;
+        break;
+    case OPT_HELP:
+        cli->help = 1;
+        break;
+    case OPT_VERSION:
+        cli->version = 1;
+        break;
+    default:
+        break;
+    }
+
+    return 0;
+}
+
+static int parse_argv(int argc, char **argv, cli_t *cli, const char *prog)
+{
+    int only_positionals = 0;
+
+    for (int i = 1; i < argc; i++) {
+        char *arg = argv[i];
+
+        if (!only_positionals && strcmp(arg, "--") == 0) {
+            only_positionals = 1;
+            continue;
+        }
+
+        if (!only_positionals && arg[0] == '-' && arg[1] == '-') {
+            char *name = arg + 2;
+            char *eq = strchr(name, '=');
+            size_t name_len = eq ? (size_t)(eq - name) : strlen(name);
+            const option_spec_t *spec = find_long_option(name, name_len);
+            char *value = arg + strlen(arg);
+
+            if (!spec)
+                return argument_error(prog, "unknown option", arg);
+            if (spec->has_arg) {
+                if (eq) {
+                    value = eq + 1;
+                } else {
+                    if (++i >= argc)
+                        return argument_error(prog, "missing value for", arg);
+                    value = argv[i];
+                }
+            } else if (eq) {
+                return argument_error(prog, "option does not take a value",
+                                      arg);
+            }
+            {
+                int rc = apply_option(cli, spec, value, prog);
+
+                if (rc != 0)
+                    return rc;
+            }
+            if (cli->help || cli->version)
+                return 0;
+            continue;
+        }
+
+        if (!only_positionals && arg[0] == '-' && arg[1] != '\0') {
+            const option_spec_t *spec = find_short_option(arg[1]);
+            char *value = arg + strlen(arg);
+
+            if (!spec)
+                return argument_error(prog, "unknown option", arg);
+            if (spec->has_arg) {
+                if (arg[2] != '\0') {
+                    value = arg + 2;
+                } else {
+                    if (++i >= argc)
+                        return argument_error(prog, "missing value for", arg);
+                    value = argv[i];
+                }
+            } else if (arg[2] != '\0') {
+                return argument_error(prog, "unknown option", arg);
+            }
+            {
+                int rc = apply_option(cli, spec, value, prog);
+
+                if (rc != 0)
+                    return rc;
+            }
+            if (cli->help || cli->version)
+                return 0;
+            continue;
+        }
+
+        if (cli->npositional > 0)
+            return argument_error(prog, "unexpected argument", arg);
+        cli->positional = arg;
+        cli->npositional = 1;
+    }
+
+    if (cli->npositional > 0) {
+        if (cli->have_device)
+            return usage_fail(prog, "device given more than once");
+        if (cli->setup)
+            return usage_fail(prog,
+                              "--setup chooses the device; do not also give "
+                              "DEVICE");
+        cli->device = cli->positional;
+        cli->have_device = 1;
+        cli->run_options = 1;
+    }
+
+    return 0;
+}
+
+static int validate_cli(const cli_t *cli, const char *prog)
+{
+    int actions = cli->setup + cli->list_inputs + cli->list_audio;
+
+    if (actions > 1)
+        return usage_fail(prog,
+                          "--setup, --list-inputs, and --list-audio are "
+                          "mutually exclusive");
+
+    if (cli->list_inputs || cli->list_audio) {
+        if (cli->run_options)
+            return usage_fail(prog,
+                              "listing does not take keying or device options");
+        return 0;
+    }
+
+    if (cli->setup) {
+        if (cli->have_device)
+            return usage_fail(prog,
+                              "--setup chooses the device; do not also give "
+                              "--device");
+        if (cli->dit_given || cli->dah_given)
+            return usage_fail(prog,
+                              "--setup learns the keys; do not also give "
+                              "--dit/--dah");
+        if (straight_mode)
+            return usage_fail(prog,
+                              "--setup detects straight-key mode; do not also "
+                              "give --straight");
+        if (!isatty(STDIN_FILENO))
+            return usage_fail(prog,
+                              "--setup needs an interactive terminal on stdin");
+    }
+
+    if (straight_mode && do_decode)
+        return usage_fail(prog, "--decode is not available with --straight");
+    if (mix_mic_mode && !audio_backend_supports_mix())
+        return usage_fail(prog,
+                          "--mix-mic is not available on this platform; use "
+                          "cw-mic-mix.sh");
+    if (dit_code == dah_code && !straight_mode)
+        return usage_fail(prog,
+                          "--dit and --dah must be different unless "
+                          "--straight is used");
+
+    return 0;
+}
+
+static int ask_no_args(const char *prog)
+{
+    char line[32];
+    char *nl;
+
+    fprintf(stderr,
+            "%s: no arguments.\n"
+            "  [s] start setup (choose the paddle)\n"
+            "  [h] print usage\n"
+            "choice [s/h]: ", prog);
+    fflush(stderr);
+
+    if (!fgets(line, sizeof(line), stdin))
+        return -1;
+    nl = strchr(line, '\n');
+    if (nl)
+        *nl = '\0';
+    if (line[0] == '\0' || strcasecmp(line, "s") == 0 ||
+        strcasecmp(line, "setup") == 0)
+        return 1;
+    if (strcasecmp(line, "h") == 0 || strcasecmp(line, "help") == 0 ||
+        strcmp(line, "?") == 0)
+        return 0;
+    return -1;
 }
 
 int main(int argc, char **argv)
@@ -2107,131 +2513,89 @@ int main(int argc, char **argv)
     int audio_rc;
     unsigned int actual_rate = 0;
     char setup_path[64];
-    char *positional[5];
-    int npositional = 0;
-    int next = 0;
-    int do_setup = 0;
-    char *device_path = NULL;
+    char *device_path;
     const char *prog = argv[0];
+    cli_t cli = {0};
 
     /*
-     * Options and keywords may appear anywhere, so --setup can be combined
-     * with the settings it should start with.  Positional arguments are
-     * collected first and interpreted once we know whether the wizard is
-     * choosing the device, because that decides what the first one means.
+     * Environment values are defaults.  Command-line options are applied
+     * afterwards, so they override the environment, and the environment
+     * overrides the built-in defaults.
      */
-    for (int i = 1; i < argc; i++) {
-        const char *arg = argv[i];
-
-        if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
-            usage(stdout, prog);
-            return 0;
-        }
-
-        if (strcmp(arg, "--version") == 0 || strcmp(arg, "-V") == 0) {
-            printf("cwkeyer %s\n", CWKEYER_VERSION);
-            return 0;
-        }
-
-        if (strcmp(arg, "--list-devices") == 0 || strcmp(arg, "-L") == 0)
-            return input_backend_list(stdout) == 0 ? 0 : 1;
-
-        if (strcmp(arg, "--list-audio-devices") == 0 ||
-            strcmp(arg, "-A") == 0)
-            return audio_backend_list(stdout) == 0 ? 0 : 1;
-
-        if (strcmp(arg, "--setup") == 0) {
-            do_setup = 1;
-            continue;
-        }
-
-        if (strcasecmp(arg, "nograb") == 0) {
-            do_grab = 0;
-            continue;
-        }
-
-        if (strcasecmp(arg, "decode") == 0) {
-            do_decode = 1;
-            continue;
-        }
-
-        if (strcasecmp(arg, "straight") == 0) {
-            straight_mode = 1;
-            continue;
-        }
-
-        if (strcasecmp(arg, "mix-mic") == 0) {
-            mix_mic_mode = 1;
-            continue;
-        }
-
-        /* A device path never starts with '-', so this is a typo. */
-        if (arg[0] == '-' && arg[1] != '\0')
-            argument_error(prog, "unknown option", arg);
-
-        if (npositional == (int)(sizeof(positional) / sizeof(positional[0])))
-            argument_error(prog, "unexpected argument", arg);
-        positional[npositional++] = argv[i];
-    }
-
-    /*
-     * With --setup the device is already chosen, so the positionals start at
-     * the speed; otherwise the first one is the device path.  Either way they
-     * are checked before the wizard runs, so a typo is reported as a typo
-     * rather than after a tap test.
-     */
-    if (!do_setup && npositional > 0)
-        device_path = positional[next++];
-
-    if (next < npositional)
-        wpm = parse_double_arg(positional[next++], "wpm", 1.0, MAX_WPM);
-
-    if (next < npositional)
-        freq_hz = parse_double_arg(positional[next++], "freq_hz", 1.0,
-                                   (double)AUDIO_RATE / 2.0 - 1.0);
-
-    if (next < npositional)
-        dit_code = lookup_key(positional[next++]);
-
-    if (next < npositional)
-        dah_code = lookup_key(positional[next++]);
-
-    if (next < npositional)
-        argument_error(prog, "unexpected argument", positional[next]);
-
-    if (do_setup || (device_path == NULL && isatty(STDIN_FILENO))) {
-        if (!isatty(STDIN_FILENO)) {
-            fprintf(stderr,
-                    "%s: --setup needs an interactive terminal on stdin\n",
-                    prog);
-            return 1;
-        }
-        if (input_backend_setup(setup_path, sizeof(setup_path)) < 0)
-            return 1;
-        device_path = setup_path;
-    } else if (device_path == NULL) {
-        usage(stderr, prog);
-        return 1;
-    }
-
-    /*
-     * A backend that cannot take exclusive control as this user should not be
-     * asked for it on every run: --setup already defaults to nograb there,
-     * and a direct invocation should behave the same way.  An explicit
-     * "nograb" still wins, and --setup always sets an explicit answer.
-     */
-    if (do_grab < 0)
-        do_grab = input_backend_grab_possible();
-
-    if (dit_code == dah_code && !straight_mode) {
-        fprintf(stderr, "dit_key and dah_key must be different\n");
-        return 1;
-    }
-
     debounce_ms = parse_uint_env("CW_KEYER_DEBOUNCE_MS", 10, 0, 50);
     debounce_ns = (int64_t)debounce_ms * 1000000LL;
     volume_percent = (int)parse_uint_env("CW_KEYER_LEVEL", 70, 0, 100);
     weight_ms = parse_double_env("CW_KEYER_WEIGHT_MS", 0.0, -25.0, 25.0);
+
+    /*
+     * With no arguments, ask on a terminal instead of guessing from isatty
+     * later.  In a pipe there is nobody to ask, so print the synopsis.
+     */
+    if (argc == 1) {
+        int choice;
+
+        if (!isatty(STDIN_FILENO)) {
+            usage(stderr, prog);
+            return 2;
+        }
+        choice = ask_no_args(prog);
+        if (choice == 0) {
+            usage(stdout, prog);
+            return 0;
+        }
+        if (choice < 0) {
+            usage(stderr, prog);
+            return 2;
+        }
+        cli.setup = 1;
+    }
+
+    {
+        int rc = parse_argv(argc, argv, &cli, prog);
+
+        if (rc != 0)
+            return rc;
+    }
+    if (cli.help) {
+        usage(stdout, prog);
+        return 0;
+    }
+    if (cli.version) {
+        printf("cwkeyer %s\n", CWKEYER_VERSION);
+        return 0;
+    }
+    {
+        int rc = validate_cli(&cli, prog);
+
+        if (rc != 0)
+            return rc;
+    }
+
+    if (cli.list_inputs)
+        return input_backend_list(stdout) == 0 ? 0 : 1;
+    if (cli.list_audio)
+        return audio_backend_list(stdout) == 0 ? 0 : 1;
+
+    if (cli.setup) {
+        if (input_backend_setup(setup_path, sizeof(setup_path)) < 0)
+            return 1;
+        cli.device = setup_path;
+        cli.have_device = 1;
+    }
+
+    if (!cli.have_device) {
+        usage(stderr, prog);
+        return 2;
+    }
+    device_path = cli.device;
+
+    /*
+     * A backend that cannot take exclusive control as this user should not be
+     * asked for it on every run.  --setup asks when the command line left the
+     * choice open; an explicit --grab/--no-grab wins.
+     */
+    if (do_grab < 0)
+        do_grab = input_backend_grab_possible();
 
     if (install_signal_handlers() < 0)
         return 1;
@@ -2242,17 +2606,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "warning: atexit(restore_terminal) failed\n");
 
     disable_terminal_echo();
-
-    if (straight_mode && do_decode)
-        fprintf(stderr,
-                "warning: decode is ignored in straight-key mode\n");
-
-    if (mix_mic_mode && !audio_backend_supports_mix()) {
-        fprintf(stderr,
-                "warning: mix-mic is not available on this platform; use "
-                "cw-mic-mix.sh instead\n");
-        mix_mic_mode = 0;
-    }
 
     fprintf(stderr, "input device: %s\n", device_path);
     fprintf(stderr,

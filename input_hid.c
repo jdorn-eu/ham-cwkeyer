@@ -162,7 +162,7 @@ static void dev_str(IOHIDDeviceRef dev, CFStringRef key, char *out, size_t size)
 }
 
 /* The identity the core passes around: stable while the device stays on the
- * same port, and readable in --list-devices. */
+ * same port, and readable in --list-inputs. */
 static void device_id(IOHIDDeviceRef dev, char *out, size_t size)
 {
     (void)snprintf(out, size, "%04x:%04x:%08x",
@@ -723,7 +723,7 @@ void *input_backend_thread(void *arg)
 
         if (matches == 0) {
             fprintf(stderr, "no input device with id '%s' is attached\n", want);
-            fprintf(stderr, "run --list-devices to see what is available\n");
+            fprintf(stderr, "run --list-inputs to see what is available\n");
             input_backend_close_devices(devices, count);
             request_stop(1);
             return NULL;
@@ -843,18 +843,16 @@ const char *input_backend_unreadable_hint(void)
 void input_backend_usage(FILE *out, usage_part_t part, const char *prog)
 {
     switch (part) {
-    case USAGE_DEVICE_ARG:
-        fputs("<vendor:product:location>", out);
-        break;
-
     case USAGE_EXAMPLES:
         fprintf(out,
-            "  %s --setup                 learn the device by tapping\n"
-            "  %s --list-devices          show HID keyboards and their ids\n"
-            "  %s 04d8:01a6              HRS PaddleAdapter, any USB port\n"
-            "  %s 04d8:01a6 25 700 COMMA DOT\n"
-            "  %s 0000:0000:000000a7 12 800 COMMA DOT nograb\n",
-            prog, prog, prog, prog, prog);
+            "  %s --setup\n"
+            "  %s --setup --wpm 25 --freq 700 --mix-mic\n"
+            "  %s 04d8:01a6 --wpm 25 --freq 700\n"
+            "  %s --device 04d8:01a6 --dit COMMA --dah DOT\n"
+            "  %s 0000:0000:000000a7 --no-grab\n"
+            "  %s --list-inputs\n"
+            "  %s --list-audio\n",
+            prog, prog, prog, prog, prog, prog, prog);
         break;
 
     case USAGE_KEYNOTE:
@@ -862,22 +860,18 @@ void input_backend_usage(FILE *out, usage_part_t part, const char *prog)
               "e.g. 224 for left control.\n", out);
         break;
 
-    case USAGE_KEYWORDS:
-        fputs("  mix-mic   Mix the microphone into the sidetone, so one output\n"
-              "            carries both and a voice application can take them\n"
-              "            from a single input. See CW_MIX_MIC_DEVICE and\n"
-              "            CW_MIX_MONITOR below.\n", out);
+    case USAGE_PLATFORM_OPTIONS:
+        fputs("      --mix-mic            Mix the microphone into the sidetone,\n"
+              "                           so one output carries both and a voice\n"
+              "                           application can take them from a single\n"
+              "                           input.  See CW_MIX_MIC_DEVICE and\n"
+              "                           CW_MIX_MONITOR below.\n", out);
         break;
 
     case USAGE_DEVICE_OPTS:
-        fputs("            List HID keyboards, grouped as unknown, keyboard,\n"
-              "            or paddle, and exit. Colors are used only on a\n"
-              "            terminal; set NO_COLOR to disable them.\n"
-              "  --setup   Choose the paddle device by tapping the levers, then\n"
-              "            start with the default speed, pitch, level, and\n"
-              "            weighting. Known paddle adapters skip the tap test.\n"
-              "            Terminal.app needs Input Monitoring permission to\n"
-              "            see the levers; exclusive access needs root.\n",
+        fputs("  Devices are vendor:product:location as printed by --list-inputs.\n"
+              "  Input Monitoring permission is required; exclusive access needs\n"
+              "  root.  A device id may stop at a field boundary, e.g. 04d8:01a6.\n",
               out);
         break;
 

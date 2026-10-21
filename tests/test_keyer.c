@@ -738,12 +738,12 @@ static const char *g_bad_arg;
 
 static void call_parse_wpm(void)
 {
-    parse_double_arg(g_bad_arg, "wpm", 1.0, MAX_WPM);
+    parse_double_option("cwkeyer", "--wpm", g_bad_arg, 1.0, MAX_WPM);
 }
 
 static void call_lookup(void)
 {
-    lookup_key(g_bad_arg);
+    lookup_key("cwkeyer", g_bad_arg);
 }
 
 /* Fork and check that fn() exits with the expected status. */
@@ -802,27 +802,32 @@ static int run_arg_tests(void)
 #endif
 
     /* Valid doubles. */
-    if (!nearly(parse_double_arg("25", "wpm", 1.0, MAX_WPM), 25.0))
+    if (!nearly(parse_double_option("cwkeyer", "--wpm", "25", 1.0, MAX_WPM),
+                25.0))
         failures++;
-    if (!nearly(parse_double_arg("12.5", "wpm", 1.0, MAX_WPM), 12.5))
+    if (!nearly(parse_double_option("cwkeyer", "--wpm", "12.5", 1.0, MAX_WPM),
+                12.5))
         failures++;
-    if (!nearly(parse_double_arg("1", "wpm", 1.0, MAX_WPM), 1.0))
+    if (!nearly(parse_double_option("cwkeyer", "--wpm", "1", 1.0, MAX_WPM),
+                1.0))
         failures++;
-
-    if (!nearly(parse_double_arg("40", "wpm", 1.0, MAX_WPM), MAX_WPM))
+    if (!nearly(parse_double_option("cwkeyer", "--wpm", "40", 1.0, MAX_WPM),
+                MAX_WPM))
+        failures++;
+    if (parse_uint_option("cwkeyer", "--level", "40", 0, 100) != 40)
         failures++;
 
     /* Invalid doubles call exit(1). */
     g_bad_arg = "0";
-    failures += !child_exits_with(1, call_parse_wpm);
+    failures += !child_exits_with(2, call_parse_wpm);
     g_bad_arg = "40.1";
-    failures += !child_exits_with(1, call_parse_wpm);
+    failures += !child_exits_with(2, call_parse_wpm);
     g_bad_arg = "abc";
-    failures += !child_exits_with(1, call_parse_wpm);
+    failures += !child_exits_with(2, call_parse_wpm);
     g_bad_arg = "inf";
-    failures += !child_exits_with(1, call_parse_wpm);
+    failures += !child_exits_with(2, call_parse_wpm);
     g_bad_arg = "";
-    failures += !child_exits_with(1, call_parse_wpm);
+    failures += !child_exits_with(2, call_parse_wpm);
 
     /* parse_uint_env: valid, out of range, invalid, and unset. */
     setenv("CW_TEST_UINT", "25", 1);
@@ -843,18 +848,18 @@ static int run_arg_tests(void)
         failures++;
 
     /* lookup_key: names, case, numeric, and unknown. */
-    if (lookup_key("COMMA") != CWKEY_COMMA)
+    if (lookup_key("cwkeyer", "COMMA") != CWKEY_COMMA)
         failures++;
-    if (lookup_key("KEY_LEFTCTRL") != CWKEY_LEFTCTRL)
+    if (lookup_key("cwkeyer", "KEY_LEFTCTRL") != CWKEY_LEFTCTRL)
         failures++;
-    if (lookup_key("leftctrl") != CWKEY_LEFTCTRL)
+    if (lookup_key("cwkeyer", "leftctrl") != CWKEY_LEFTCTRL)
         failures++;
-    if (lookup_key("42") != 42)
+    if (lookup_key("cwkeyer", "42") != 42)
         failures++;
-    if (lookup_key("0x2a") != 42)
+    if (lookup_key("cwkeyer", "0x2a") != 42)
         failures++;
     g_bad_arg = "NOT_A_KEY";
-    failures += !child_exits_with(1, call_lookup);
+    failures += !child_exits_with(2, call_lookup);
 
 #if defined(__linux__)
     /* bit_is_set. */
@@ -1590,6 +1595,10 @@ static void reset_cli_state(void)
     mix_mic_mode = 0;
     dit_code = CWKEY_LEFTCTRL;
     dah_code = CWKEY_RIGHTCTRL;
+    volume_percent = 70;
+    weight_ms = 0.0;
+    debounce_ms = 10;
+    debounce_ns = 10000000LL;
 }
 
 /* Run main() in this process, with everything redirected, for the paths that
@@ -1632,74 +1641,172 @@ static int run_cli_tests(void)
     int failures = 0;
     char p0[] = "cwkeyer";
     char help[] = "--help";
+    char version[] = "--version";
     char bad[] = "--bogus";
     char setup[] = "--setup";
-    char mixmic[] = "mix-mic";
-    char d25[] = "25";
-    char f700[] = "700";
-    char kcomma[] = "COMMA";
-    char kdot[] = "DOT";
+    char listin[] = "--list-inputs";
+    char listaudio[] = "--list-audio";
+    char owpm[] = "--wpm";
+    char dit[] = "--dit";
+    char dah[] = "--dah";
+    char level[] = "--level";
+    char weight[] = "--weight";
+    char debounce[] = "--debounce";
+    char grab[] = "--grab";
+    char nograb[] = "--no-grab";
+    char straight[] = "--straight";
+    char decode[] = "--decode";
+    char mixmic[] = "--mix-mic";
+    char device[] = "--device";
     char dev[] = "dev";
-    char d12[] = "12";
-    char f800[] = "800";
     char extra[] = "extra";
+    char v25[] = "25";
+    char v0[] = "0";
+    char v101[] = "101";
+    char vneg26[] = "-26";
+    char v51[] = "51";
+    char comma[] = "COMMA";
+    char weq[] = "--wpm=25";
+    char wshort[] = "-w25";
+    char hval[] = "--help=1";
+    char ddash[] = "--";
+    char oldkw[] = "nograb";
+    char s40[] = "40";
+    char sneg5[] = "-5";
+    char s5[] = "5";
+
     char *help_argv[] = {p0, help, NULL};
-    char *bad_opt[] = {p0, bad, NULL};
+    char *ver_argv[] = {p0, version, NULL};
+    char *bad_argv[] = {p0, bad, NULL};
     char *setup_only[] = {p0, setup, NULL};
-    char *setup_kw[] = {p0, setup, mixmic, NULL};
-    char *setup_pos[] = {p0, setup, d25, f700, kcomma, kdot, NULL};
-    char *too_many[] = {p0, dev, d12, f800, kcomma, kdot, extra, NULL};
+    char *setup_wpm[] = {p0, setup, owpm, v25, NULL};
+    char *setup_eq[] = {p0, setup, weq, NULL};
+    char *setup_short[] = {p0, setup, wshort, NULL};
+    char *setup_dit[] = {p0, setup, dit, comma, NULL};
+    char *setup_straight[] = {p0, setup, straight, NULL};
+    char *setup_device[] = {p0, setup, device, dev, NULL};
+    char *setup_pos[] = {p0, setup, dev, NULL};
+    char *setup_mix[] = {p0, setup, mixmic, NULL};
+    char *listin_wpm[] = {p0, listin, owpm, v25, NULL};
+    char *two_actions[] = {p0, listin, listaudio, NULL};
+    char *grab_conflict[] = {p0, grab, nograb, dev, NULL};
+    char *straight_decode[] = {p0, straight, decode, dev, NULL};
+    char *same_keys[] = {p0, dit, comma, dah, comma, dev, NULL};
+    char *bad_wpm[] = {p0, owpm, v0, dev, NULL};
+    char *bad_level[] = {p0, level, v101, dev, NULL};
+    char *bad_weight[] = {p0, weight, vneg26, dev, NULL};
+    char *bad_debounce[] = {p0, debounce, v51, dev, NULL};
+    char *two_pos[] = {p0, dev, extra, NULL};
+    char *dup_device[] = {p0, device, dev, extra, NULL};
+    char *missing[] = {p0, owpm, NULL};
+    char *flag_value[] = {p0, hval, NULL};
+    char *dashdash[] = {p0, ddash, dev, extra, NULL};
+    char *old_wpm[] = {p0, dev, v25, NULL};
+    char *old_keyword[] = {p0, dev, oldkw, NULL};
 
-    /* --setup alone still works, and needs a terminal like it always did. */
     reset_cli_state();
-    failures += cli_expect("--setup", 2, setup_only, 1, "interactive terminal",
-                           "unexpected argument");
-
-    /* --help is an answer, not an error: it goes to stdout and exits 0. */
-    failures += cli_expect("--help", 2, help_argv, 0, "usage:", NULL);
+    failures += cli_expect("--help", 2, help_argv, 0, "Actions:", NULL);
+    failures += cli_expect("--help", 2, help_argv, 0, "Keying:", NULL);
+    failures += cli_expect("--help", 2, help_argv, 0, "--list-inputs", NULL);
 #if defined(__APPLE__)
-    failures += cli_expect("--help", 2, help_argv, 0, "mix-mic", NULL);
+    failures += cli_expect("--help", 2, help_argv, 0, "--mix-mic", NULL);
 #else
-    /* Linux points at the helper instead of advertising a keyword it refuses. */
     failures += cli_expect("--help", 2, help_argv, 0, "cw-mic-mix.sh",
-                           "mix-mic");
+                           "--mix-mic");
 #endif
+    failures += cli_expect("--version", 2, ver_argv, 0, "cwkeyer ", NULL);
+    failures += cli_expect("--bogus", 2, bad_argv, 2,
+                           "unknown option '--bogus'", NULL);
+    failures += cli_expect("--bogus", 2, bad_argv, 2, "--help", NULL);
 
-    failures += cli_expect("--bogus", 2, bad_opt, 1, "unknown option '--bogus'",
-                           NULL);
-    failures += cli_expect("--bogus", 2, bad_opt, 1, "--help", NULL);
-    failures += cli_expect("--bogus", 2, bad_opt, 1, NULL, "Options:");
-
-    /* The command this suite was written for: the wizard plus settings. */
-    reset_cli_state();
-    failures += cli_expect("--setup mix-mic", 3, setup_kw, 1,
-                           "interactive terminal", "unexpected argument");
-    if (run_main_quiet(3, setup_kw) != 1) {
-        fprintf(stderr, "cli: --setup mix-mic did not fail without a tty\n");
-        failures++;
-    }
-    if (!mix_mic_mode) {
-        fprintf(stderr, "cli: --setup mix-mic did not set mix-mic\n");
-        failures++;
-    }
-
-    /* With --setup the positionals are speed and pitch, not a device. */
-    reset_cli_state();
-    if (run_main_quiet(6, setup_pos) != 1) {
-        fprintf(stderr, "cli: --setup with settings did not need a tty\n");
-        failures++;
-    }
-    if (!nearly(ALOAD(wpm), 25.0) || !nearly(ALOAD(freq_hz), 700.0)) {
-        fprintf(stderr, "cli: --setup did not take the speed and pitch\n");
-        failures++;
-    }
-    if (dit_code != CWKEY_COMMA || dah_code != CWKEY_DOT) {
-        fprintf(stderr, "cli: --setup did not take the key names\n");
-        failures++;
-    }
-
-    failures += cli_expect("too many arguments", 7, too_many, 1,
+    failures += cli_expect("--setup", 2, setup_only, 2,
+                           "--setup needs an interactive terminal", NULL);
+    failures += cli_expect("--wpm 0", 4, bad_wpm, 2,
+                           "invalid value '0' for --wpm", NULL);
+    failures += cli_expect("--level 101", 4, bad_level, 2,
+                           "invalid value '101' for --level", NULL);
+    failures += cli_expect("--weight -26", 4, bad_weight, 2,
+                           "invalid value '-26' for --weight", NULL);
+    failures += cli_expect("--debounce 51", 4, bad_debounce, 2,
+                           "invalid value '51' for --debounce", NULL);
+    failures += cli_expect("missing --wpm value", 2, missing, 2,
+                           "missing value for '--wpm'", NULL);
+    failures += cli_expect("--help=1", 2, flag_value, 2,
+                           "option does not take a value '--help=1'", NULL);
+    failures += cli_expect("two positionals", 3, two_pos, 2,
                            "unexpected argument 'extra'", NULL);
+    failures += cli_expect("--device + positional", 4, dup_device, 2,
+                           "device given more than once", NULL);
+    failures += cli_expect("old positional WPM", 3, old_wpm, 2,
+                           "unexpected argument '25'", NULL);
+    failures += cli_expect("old bare keyword", 3, old_keyword, 2,
+                           "unexpected argument 'nograb'", NULL);
+    failures += cli_expect("--grab --no-grab", 4, grab_conflict, 2,
+                           "--grab and --no-grab cannot be used together",
+                           NULL);
+    failures += cli_expect("--straight --decode", 4, straight_decode, 2,
+                           "--decode is not available with --straight", NULL);
+    failures += cli_expect("same keys", 6, same_keys, 2,
+                           "--dit and --dah must be different", NULL);
+    failures += cli_expect("listing + setting", 4, listin_wpm, 2,
+                           "listing does not take keying or device options",
+                           NULL);
+    failures += cli_expect("two actions", 3, two_actions, 2,
+                           "are mutually exclusive", NULL);
+    failures += cli_expect("--setup + --dit", 4, setup_dit, 2,
+                           "--setup learns the keys", NULL);
+    failures += cli_expect("--setup + --straight", 3, setup_straight, 2,
+                           "--setup detects straight-key mode", NULL);
+    failures += cli_expect("--setup + --device", 4, setup_device, 2,
+                           "--setup chooses the device", NULL);
+    failures += cli_expect("--setup + positional", 3, setup_pos, 2,
+                           "--setup chooses the device", NULL);
+    failures += cli_expect("-- --device as positional", 4, dashdash, 2,
+                           "unexpected argument 'extra'", NULL);
+
+    /* These parse successfully and then fail on the missing terminal. */
+    reset_cli_state();
+    if (run_main_quiet(4, setup_wpm) != 2 || !nearly(ALOAD(wpm), 25.0)) {
+        fprintf(stderr, "cli: --wpm with --setup was not parsed\n");
+        failures++;
+    }
+    reset_cli_state();
+    if (run_main_quiet(3, setup_eq) != 2 || !nearly(ALOAD(wpm), 25.0)) {
+        fprintf(stderr, "cli: --wpm=25 was not parsed\n");
+        failures++;
+    }
+    reset_cli_state();
+    if (run_main_quiet(3, setup_short) != 2 || !nearly(ALOAD(wpm), 25.0)) {
+        fprintf(stderr, "cli: -w25 was not parsed\n");
+        failures++;
+    }
+    reset_cli_state();
+    if (run_main_quiet(3, setup_mix) != 2 || !mix_mic_mode) {
+        fprintf(stderr, "cli: --mix-mic with --setup was not parsed\n");
+        failures++;
+    }
+    reset_cli_state();
+    {
+        char *settings[] = {p0, setup, level, s40, weight, sneg5,
+                            debounce, s5, nograb, NULL};
+
+        if (run_main_quiet(9, settings) != 2 ||
+            volume_percent != 40 || !nearly(weight_ms, -5.0) ||
+            debounce_ms != 5 || do_grab != 0) {
+            fprintf(stderr, "cli: --level/--weight/--debounce/--no-grab "
+                            "were not parsed\n");
+            failures++;
+        }
+    }
+
+#if !defined(__APPLE__)
+    {
+        char *linux_mix[] = {p0, mixmic, dev, NULL};
+
+        failures += cli_expect("--mix-mic on Linux", 3, linux_mix, 2,
+                               "--mix-mic is not available", NULL);
+    }
+#endif
 
     reset_cli_state();
     return failures;
@@ -1712,21 +1819,28 @@ static int run_main_tests(void)
     char p1[] = "--help";
     char p2[] = "--version";
     char p3[] = "cwkeyer_no_such_device";
-    char p4[] = "25";
-    char p5[] = "700";
-    char p6[] = "COMMA";
-    char p7[] = "DOT";
-    char p8[] = "nograb";
-    char p9[] = "decode";
-    char p10[] = "--list-devices";
-    char p11[] = "--setup";
+    char p4[] = "--wpm";
+    char p5[] = "25";
+    char p6[] = "--freq";
+    char p7[] = "700";
+    char p8[] = "--dit";
+    char p9[] = "COMMA";
+    char p10[] = "--dah";
+    char p11[] = "DOT";
+    char p12[] = "--no-grab";
+    char p13[] = "--decode";
+    char p14[] = "--list-inputs";
+    char p15[] = "--list-audio";
+    char p16[] = "--setup";
 
     char *help_argv[] = {p0, p1, NULL};
     char *ver_argv[] = {p0, p2, NULL};
-    char *list_argv[] = {p0, p10, NULL};
-    char *setup_argv[] = {p0, p11, NULL};
+    char *listin_argv[] = {p0, p14, NULL};
+    char *listaudio_argv[] = {p0, p15, NULL};
+    char *setup_argv[] = {p0, p16, NULL};
     char *noargs_argv[] = {p0, NULL};
-    char *run_argv[] = {p0, p3, p4, p5, p6, p7, p8, p9, NULL};
+    char *run_argv[] = {p0, p3, p4, p5, p6, p7, p8, p9, p10, p11,
+                        p12, p13, NULL};
 
     int saved_out = dup(STDOUT_FILENO);
     int saved_err = quiet_stderr();
@@ -1743,28 +1857,37 @@ static int run_main_tests(void)
         failures++;
     if (cwkeyer_program_main(2, ver_argv) != 0)
         failures++;
-    if (cwkeyer_program_main(2, list_argv) != 0)
+    if (cwkeyer_program_main(2, listin_argv) != 0)
         failures++;
-    if (devnull_in >= 0 && cwkeyer_program_main(2, setup_argv) != 1)
+    if (cwkeyer_program_main(2, listaudio_argv) != 0)
         failures++;
-    if (cwkeyer_program_main(1, noargs_argv) != 1)
+    if (devnull_in >= 0 && cwkeyer_program_main(2, setup_argv) != 2)
+        failures++;
+    if (cwkeyer_program_main(1, noargs_argv) != 2)
         failures++;
 
     /*
-     * Full startup with a non-existent input device. The evdev thread fails
+     * Full startup with a non-existent input device. The input thread fails
      * to open it and asks the program to stop, so main exercises argument
-     * parsing, audio setup (ALSA "null"), thread startup and joins, and
-     * returns the fatal status.
+     * parsing, audio setup (ALSA "null" on Linux), thread startup and joins,
+     * and returns the fatal status.
      */
     setenv("CW_ALSA_DEVICE", "null", 1);
     ASTORE(running, 1);
     stop_requested = 0;
     ASTORE(fatal_error, 0);
+    reset_cli_state();
 
-    int rc = cwkeyer_program_main(8, run_argv);
+    int rc = cwkeyer_program_main(12, run_argv);
 
     if (rc != 1)
         failures++;
+    if (!nearly(ALOAD(wpm), 25.0) || !nearly(ALOAD(freq_hz), 700.0) ||
+        dit_code != CWKEY_COMMA || dah_code != CWKEY_DOT ||
+        do_grab != 0 || !do_decode) {
+        fprintf(stderr, "main: the new-style options were not applied\n");
+        failures++;
+    }
 
     /* Flush while still pointed at /dev/null: stdout is block-buffered when
      * piped, so a late flush would otherwise leak to the real stdout. */

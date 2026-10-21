@@ -98,7 +98,7 @@ int  audio_backend_list(FILE *out);
  * access can work at all for this user, which is what the setup wizard uses
  * to pick the default answer.
  *
- * The rest is the primitive set that the shared --list-devices listing and
+ * The rest is the primitive set that the shared --list-inputs listing and
  * --setup wizard are built on, so neither has to exist twice:
  *
  *   discover()/close_devices()  fill in and release an input_device_t array
@@ -141,11 +141,10 @@ int   input_backend_list(FILE *out);
  * --help honest on a platform whose devices and settings differ.
  */
 typedef enum {
-    USAGE_DEVICE_ARG,   /* the device placeholder on the usage line */
     USAGE_EXAMPLES,     /* example command lines */
     USAGE_KEYNOTE,      /* where raw key codes come from */
-    USAGE_KEYWORDS,     /* backend-only keywords such as mix-mic */
-    USAGE_DEVICE_OPTS,  /* the --list-devices and --setup paragraphs */
+    USAGE_PLATFORM_OPTIONS,     /* backend-only options such as --mix-mic */
+    USAGE_DEVICE_OPTS,  /* platform notes about devices and permissions */
 } usage_part_t;
 
 void input_backend_usage(FILE *out, usage_part_t part, const char *prog);
