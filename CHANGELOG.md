@@ -128,6 +128,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On macOS, a denied Input Monitoring permission is now reported at startup
+  and by the setup wizard, instead of surfacing as a running keyer that never
+  keys or a tap test that times out.  A failure to initialize the microphone
+  unit also points at the Microphone permission.
 - The CoreAudio capture and monitor rings now have one owner per cursor: the
   writer never advances the reader's index, and the slots are atomic, so a
   ring that is lapped cannot race the reader or resurrect stale frames.  The

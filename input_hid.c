@@ -28,6 +28,7 @@
 #include <IOKit/hid/IOHIDKeys.h>
 #include <IOKit/hid/IOHIDManager.h>
 #include <IOKit/hid/IOHIDUsageTables.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
 
 #include <ctype.h>
 #include <errno.h>
@@ -51,6 +52,35 @@
 /* One manager for the whole process; discovery, setup, and the thread share
  * it, because IOHIDDeviceRef objects are only meaningful while it lives. */
 static IOHIDManagerRef hid_manager;
+
+/*
+ * Input Monitoring can be denied without IOHIDManagerOpen reporting an
+ * error: the manager opens, but no keyboard values ever arrive, so the setup
+ * wizard waits out its timeout and the running keyer looks dead.  Check the
+ * permission up front and say what is wrong instead.  An undetermined
+ * permission is left alone: macOS prompts for it when the HID API is first
+ * used, and warning first would only be confusing.
+ */
+static int hid_access_denied(void)
+{
+    static int warned;
+    IOHIDAccessType access = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent);
+
+    if (access != kIOHIDAccessTypeDenied)
+        return 0;
+
+    if (!warned) {
+        warned = 1;
+        fprintf(stderr,
+                "error: macOS has denied Input Monitoring to this program.\n"
+                "       Grant it to the terminal (or other launcher) in "
+                "System Settings >\n"
+                "       Privacy & Security > Input Monitoring, then restart "
+                "that application.\n");
+    }
+
+    return 1;
+}
 
 static IOHIDManagerRef manager(void)
 {
@@ -507,6 +537,9 @@ static int wait_for(const input_device_t *devices, size_t count, size_t only,
     int64_t deadline;
     int rc = -1;
 
+    if (hid_access_denied())
+        return -1;
+
     if (only != SIZE_MAX && only >= count)
         return -1;
 
@@ -654,6 +687,11 @@ void *input_backend_thread(void *arg)
     IOHIDDeviceRef dev;
     IOHIDOptionsType options = kIOHIDOptionsTypeNone;
     int fatal = 0;
+
+    if (hid_access_denied()) {
+        request_stop(1);
+        return NULL;
+    }
 
     if (input_backend_discover(&devices, &count) < 0) {
         request_stop(1);

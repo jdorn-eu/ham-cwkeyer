@@ -637,6 +637,11 @@ static int ca_open_mic(AudioDeviceID output_dev)
     err = AudioUnitInitialize(mic_unit);
     if (err != noErr) {
         fprintf(stderr, "mix-mic: AudioUnitInitialize: %d\n", (int)err);
+        fprintf(stderr,
+                "         If Microphone access has not been granted, allow "
+                "it for the terminal in\n"
+                "         System Settings > Privacy & Security > Microphone, "
+                "then restart it.\n");
         goto fail;
     }
 

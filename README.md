@@ -130,8 +130,10 @@ Three things differ from Linux, all of them forced by the platform:
 
 - **Input Monitoring.** macOS only delivers keyboard HID values to a process
   holding the Input Monitoring permission, and attributes it to whatever
-  launched the keyer (your terminal). If `--setup` never sees a tap, grant it
-  under System Settings → Privacy & Security → Input Monitoring.
+  launched the keyer (your terminal). If the permission has been denied, the
+  keyer says so at startup instead of waiting for a tap that never arrives;
+  grant it under System Settings → Privacy & Security → Input Monitoring and
+  restart the terminal.
 - **Exclusive access needs root.** `kIOHIDOptionsTypeSeizeDevice` stands in
   for `EVIOCGRAB`, and is refused for keyboards unless the process is root,
   so the keyer defaults to `nograb` when exclusive access is not possible (a

@@ -68,7 +68,9 @@ is usable as a paddle with
 and your own key names.
 .PP
 Reading keyboard input needs the Input Monitoring permission, which macOS
-attributes to the terminal that launched the keyer. Taking exclusive control
+attributes to the terminal that launched the keyer. If the permission has
+been denied, the keyer reports it at startup and from the setup wizard rather
+than waiting for a tap that never arrives. Taking exclusive control
 stands in for evdev's grab and is refused for keyboards unless the process is
 root, so the keyer defaults to
 .B nograb
